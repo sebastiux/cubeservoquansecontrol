@@ -1,5 +1,3 @@
 torch>=2.2
 numpy>=1.24
 scipy>=1.10
-matplotlib>=3.7
-onnx>=1.15   # opcional (exportación ONNX)

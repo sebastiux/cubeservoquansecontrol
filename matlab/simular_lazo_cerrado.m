@@ -11,6 +11,8 @@ function out = simular_lazo_cerrado(ctrl, x0, p, T, opts)
 %       .noise   desviación estándar de ruido en velocidades (rad/s)  [0]
 %       .dist_t  instante de una perturbación (impulso en alpha_dot) [inf]
 %       .dist_v  magnitud del impulso en alpha_dot (rad/s)            [0]
+%       .Ts_ctrl periodo del controlador (s); la acción se mantiene (ZOH)
+%                entre decisiones. Agentes RL: Ts_agente = 0.01     [p.Ts]
 %
 %   Integración RK4 a paso fijo p.Ts con u retenido (ZOH), igual que en el
 %   entrenamiento en Python.
@@ -20,6 +22,8 @@ if ~isfield(opts, 'sensor'), opts.sensor = 'ideal'; end
 if ~isfield(opts, 'noise'),  opts.noise  = 0;       end
 if ~isfield(opts, 'dist_t'), opts.dist_t = inf;     end
 if ~isfield(opts, 'dist_v'), opts.dist_v = 0;       end
+if ~isfield(opts, 'Ts_ctrl'), opts.Ts_ctrl = p.Ts;  end
+n_hold = max(1, round(opts.Ts_ctrl/p.Ts));
 
 dt = p.Ts;
 nT = round(T/dt);
@@ -51,9 +55,11 @@ for k = 1:nT
         y(3:4,:) = y(3:4,:) + opts.noise*randn(2, N);
     end
 
-    % ---- control (saturado)
-    u = ctrl(y);
-    u = min(max(u, -p.Vmax), p.Vmax);
+    % ---- control (saturado), recalculado cada n_hold pasos
+    if mod(k-1, n_hold) == 0
+        u = ctrl(y);
+        u = min(max(u, -p.Vmax), p.Vmax);
+    end
     U(:,:,k) = u;
 
     % ---- planta no lineal (RK4)

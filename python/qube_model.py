@@ -26,7 +26,7 @@ Todo está escrito en PyTorch y vectorizado por lotes (batch) para poder:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 
 import numpy as np
 import scipy.linalg as sla
@@ -173,50 +173,3 @@ def linearize_numeric(p: QubeParams, eps=1e-6):
     du = torch.full((1,), eps, dtype=torch.float64)
     B = ((dynamics(x0, u0 + du, bp_) - dynamics(x0, u0 - du, bp_)) / (2 * eps))[0].numpy()
     return A, B.reshape(4, 1)
-
-
-# --------------------------------------------------------------------------
-# Modelo de sensores (lo que el controlador "ve" en el hardware real)
-# --------------------------------------------------------------------------
-@dataclass
-class SensorModel:
-    """Encoders cuantizados + derivada filtrada 50s/(s+50) para velocidades
-    (como el bloque alpha_dot de tu Simulink) + ruido opcional."""
-    quantize: bool = True
-    filtered_velocity: bool = True
-    wc: float = 50.0               # rad/s, filtro de la derivada
-    vel_noise_std: float = 0.0     # ruido extra en velocidades (rad/s)
-    enc_counts: int = 2048
-    extra: dict = field(default_factory=dict)
-
-    def reset(self, x0: torch.Tensor):
-        y = self._angles(x0)
-        self._y_prev = y
-        if self.filtered_velocity:
-            self._v = x0[:, 2:4].clone()
-        return self.measure_from(x0, y, first=True)
-
-    def _angles(self, x):
-        y = x[:, 0:2]
-        if self.quantize:
-            q = 2 * np.pi / self.enc_counts
-            # straight-through: valor cuantizado, gradiente del valor continuo
-            y = y + (torch.round(y / q) * q - y).detach()
-        return y
-
-    def measure_from(self, x, y, dt=None, first=False):
-        if self.filtered_velocity and not first:
-            # Euler hacia atrás de 50s/(s+50)
-            self._v = (self._v + self.wc * (y - self._y_prev)) / (1 + self.wc * dt)
-            self._y_prev = y
-            v = self._v
-        elif self.filtered_velocity:
-            v = self._v
-        else:
-            v = x[:, 2:4]
-        if self.vel_noise_std > 0:
-            v = v + self.vel_noise_std * torch.randn_like(v)
-        return torch.cat([y, v], dim=1)
-
-    def measure(self, x, dt):
-        return self.measure_from(x, self._angles(x), dt=dt)
