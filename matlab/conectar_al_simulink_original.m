@@ -1,54 +1,34 @@
-function nuevo = conectar_al_simulink_original(tipo, modelo_original)
-%CONECTAR_AL_SIMULINK_ORIGINAL Inserta el controlador RL en tu Simulink del Qube.
+function nuevo = conectar_al_simulink_original(modelo_original)
+%CONECTAR_AL_SIMULINK_ORIGINAL Pone la red DQN en tu modelo de Quanser (sin LQR).
 %
-%   conectar_al_simulink_original()                 % DQN (por defecto)
-%   conectar_al_simulink_original('qlearning')      % Q-learning tabular
-%   conectar_al_simulink_original('dqn', 'ruta/qs3_lqr_ctrl_simulinkFInal.slx')
+%   conectar_al_simulink_original()
+%   conectar_al_simulink_original('ruta/qs3_lqr_ctrl_simulinkFInal.slx')
 %
-%   NO modifica tu modelo: crea una copia  qs3_dqn_ctrl.slx / qs3_qlearning_ctrl.slx
-%   en la misma carpeta. Cambios en la copia:
+%   NO modifica tu modelo: crea una copia  qs3_dqn_ctrl.slx  en la misma
+%   carpeta. En la copia:
 %
-%     Qube With Pendulum (X) --> ZOH (Ts_agente) --> Controlador RL --> Rate Transition --+
-%                                                                                         |
-%     u = -K*x (LQR original) -----------------------------------------------------+     |
-%                                                                                  v     v
-%                                         Selector LQR/RL (usar_rl) --> Enable Balance Control Switch (dato "1")
+%     ANTES:  Qube (X) -> Sum (0 - X) -> u = -K*x -> Enable Balance Control Switch
+%     AHORA:  Qube (X) -> ZOH (Ts_agente) -> Controlador DQN -> Rate Transition
+%                                                -> Enable Balance Control Switch
 %
-%   * El controlador RL toma X DIRECTAMENTE del Qube. (Tu ganancia K recibe -X
-%     a través del bloque Sum = 0 - X; si la red tomara esa señal, el signo
-%     quedaría invertido.)
-%   * Se conserva tu switch |alpha| <= 15° y el LQR para comparar:
-%     usar_rl = 1 -> RL, usar_rl = 0 -> LQR (se puede cambiar en External Mode).
-%   * La InitFcn del modelo carga red_dqn / tabla_q / Ts_agente desde models/.
-%
-%   Antes de correr en el Qube: ejecuta ProyectoControlFinal.m (K, L, beta, m
-%   de tus observadores), igual que con el modelo original.
+%   * Se eliminan la ganancia K y el bloque Sum: ya no se usa LQR.
+%   * La red toma X DIRECTAMENTE de "Qube With Pendulum" (sin el signo menos
+%     del Sum: con -X el lazo quedaría con el signo invertido).
+%   * Se conservan tu switch de balance (|alpha| <= 15°), los observadores,
+%     scopes y la configuración de QUARC.
+%   * La InitFcn del modelo ejecuta cargar_red_dqn (red_dqn, Ts_agente y las
+%     ganancias L, beta, m de tus observadores si no existen).
 
-if nargin < 1 || isempty(tipo), tipo = 'dqn'; end
-tipo = lower(tipo);
 here = fileparts(mfilename('fullpath'));
-if nargin < 2 || isempty(modelo_original)
+if nargin < 1 || isempty(modelo_original)
     modelo_original = fullfile(here, '..', 'simulink', 'qs3_lqr_ctrl_simulinkFInal.slx');
 end
-switch tipo
-    case 'dqn'
-        bloque = 'Controlador DQN';   codigo = 'dqn_controller_block.m';        param = 'red_dqn';
-    case {'qlearning', 'q'}
-        tipo = 'qlearning';
-        bloque = 'Controlador Q-learning'; codigo = 'qlearning_controller_block.m'; param = 'tabla_q';
-    otherwise
-        error('tipo debe ser ''dqn'' o ''qlearning''');
-end
-
 addpath(here);
-evalin('base', 'cargar_controlador_rl');
-if ~evalin('base', sprintf('exist(''%s'', ''var'')', param))
-    error('No se encontró %s: entrena primero (python/train_%s.py).', param, tipo);
-end
+evalin('base', 'cargar_red_dqn');
 
 % ---------------------------------------------------------- copia del modelo
-[carpeta, ~] = fileparts(modelo_original);
-nuevo = ['qs3_' tipo '_ctrl'];
+carpeta = fileparts(modelo_original);
+nuevo = 'qs3_dqn_ctrl';
 destino = fullfile(carpeta, [nuevo '.slx']);
 if bdIsLoaded(nuevo), close_system(nuevo, 0); end
 copyfile(modelo_original, destino, 'f');
@@ -57,58 +37,59 @@ load_system(destino);
 % ---------------------------------------------------------- bloques existentes
 qube = find_unico(nuevo, 'Name', 'Qube With Pendulum');
 gain = find_unico(nuevo, 'BlockType', 'Gain', 'Gain', 'K');
+sumb = find_unico(nuevo, 'BlockType', 'Sum');
 sw   = find_unico(nuevo, 'BlockType', 'MultiPortSwitch');
+gnd  = find_unico(nuevo, 'BlockType', 'Ground');
 
-ph_gain = get_param(gain, 'PortHandles');
-ph_sw   = get_param(sw,   'PortHandles');
 ph_qube = get_param(qube, 'PortHandles');
+ph_gain = get_param(gain, 'PortHandles');
+ph_sum  = get_param(sumb, 'PortHandles');
+ph_sw   = get_param(sw,   'PortHandles');
+pos     = get_param(gain, 'Position');           % la red va donde estaba K
 
-% desconectar  LQR -> switch (entrada de datos "1" = puerto 3 del switch)
-l = get_param(ph_gain.Outport(1), 'Line');
-if l ~= -1, delete_line(l); end
+% ---------------------------------------------------------- quitar el LQR
+% Ground y X tienen ramas hacia otros bloques: se borra solo la rama al Sum
+nm = @(b) get_param(b, 'Name');
+delete_line(nuevo, [nm(gnd) '/1'],  [nm(sumb) '/1']);        % Ground -> Sum
+delete_line(nuevo, [nm(qube) '/1'], [nm(sumb) '/2']);        % X -> Sum
+delete_line(get_param(ph_sum.Outport(1),  'Line'));          % Sum -> K
+delete_line(get_param(ph_gain.Outport(1), 'Line'));          % K -> switch
+delete_block(gain);
+delete_block(sumb);
 
-% ---------------------------------------------------------- bloques nuevos
-pg = get_param(gain, 'Position');           % [x1 y1 x2 y2]
-x0 = pg(1); y0 = pg(4) + 80;
+% ---------------------------------------------------------- red DQN
+x0 = pos(1); y0 = pos(2);
 blk = @(n) [nuevo '/' n];
-
 add_block('simulink/Discrete/Zero-Order Hold', blk('ZOH agente'), ...
-          'SampleTime', 'Ts_agente', 'Position', [x0-140 y0 x0-100 y0+30]);
-add_block('simulink/User-Defined Functions/MATLAB Function', blk(bloque), ...
-          'Position', [x0-60 y0-5 x0+70 y0+35]);
-set_mfunction(blk(bloque), fullfile(here, codigo), {param});
-add_block('simulink/Signal Attributes/Rate Transition', blk('Rate Transition RL'), ...
-          'Position', [x0+100 y0 x0+140 y0+30]);
-add_block('simulink/Sources/Constant', blk('usar_rl'), 'Value', 'usar_rl', ...
-          'Position', [x0+90 y0-50 x0+130 y0-30]);
-add_block('simulink/Signal Routing/Switch', blk('Selector LQR//RL'), ...
-          'Criteria', 'u2 ~= 0', 'Position', [x0+170 pg(2)-10 x0+200 y0+35]);
+          'SampleTime', 'Ts_agente', 'Position', [x0-170 y0 x0-130 y0+30]);
+add_block('simulink/User-Defined Functions/MATLAB Function', blk('Controlador DQN'), ...
+          'Position', [x0-100 y0-5 x0+20 y0+35]);
+set_mfunction(blk('Controlador DQN'), fullfile(here, 'dqn_controller_block.m'), {'red_dqn'});
+add_block('simulink/Signal Attributes/Rate Transition', blk('Rate Transition DQN'), ...
+          'OutPortSampleTime', get_param(nuevo, 'FixedStep'), ...
+          'Position', [x0+45 y0 x0+85 y0+30]);
 
 ph_zoh = get_param(blk('ZOH agente'), 'PortHandles');
-ph_ctl = get_param(blk(bloque), 'PortHandles');
-ph_rt  = get_param(blk('Rate Transition RL'), 'PortHandles');
-ph_c   = get_param(blk('usar_rl'), 'PortHandles');
-ph_sel = get_param(blk('Selector LQR//RL'), 'PortHandles');
+ph_ctl = get_param(blk('Controlador DQN'), 'PortHandles');
+ph_rt  = get_param(blk('Rate Transition DQN'), 'PortHandles');
 
 L = @(a, b) add_line(nuevo, a, b, 'autorouting', 'on');
-L(ph_qube.Outport(1), ph_zoh.Inport(1));      % X (sin el signo menos)
+L(ph_qube.Outport(1), ph_zoh.Inport(1));      % X (sin signo menos)
 L(ph_zoh.Outport(1),  ph_ctl.Inport(1));
 L(ph_ctl.Outport(1),  ph_rt.Inport(1));
-L(ph_rt.Outport(1),   ph_sel.Inport(1));      % u1: RL
-L(ph_c.Outport(1),    ph_sel.Inport(2));      % u2: usar_rl
-L(ph_gain.Outport(1), ph_sel.Inport(3));      % u3: LQR original
-L(ph_sel.Outport(1),  ph_sw.Inport(3));       % -> switch de balance (dato "1")
+L(ph_rt.Outport(1),   ph_sw.Inport(3));       % dato "1" del switch de balance
 
-% ---------------------------------------------------------- callbacks
+% ---------------------------------------------------------- InitFcn
 init = get_param(nuevo, 'InitFcn');
-cmd  = sprintf('addpath(''%s''); cargar_controlador_rl;', here);
-if ~contains(init, 'cargar_controlador_rl')
+cmd  = sprintf(['addpath(fullfile(fileparts(get_param(''%s'', ''FileName'')), ''..'', ''matlab''));\n' ...
+                'cargar_red_dqn;'], nuevo);
+if ~contains(init, 'cargar_red_dqn')
     set_param(nuevo, 'InitFcn', strtrim(sprintf('%s\n%s', init, cmd)));
 end
 
 save_system(nuevo, destino);
 open_system(nuevo);
-fprintf('Listo: %s\n  Bloque "%s" conectado. usar_rl = 1 (RL) / 0 (LQR).\n', destino, bloque);
+fprintf('Listo: %s\n  LQR eliminado; "Controlador DQN" conectado al switch de balance.\n', destino);
 end
 
 % =====================================================================

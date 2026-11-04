@@ -21,7 +21,6 @@ las matrices A y B de ProyectoControlFinal.m (se verifica en
 Todo está escrito en PyTorch y vectorizado por lotes (batch) para poder:
   * simular miles de trayectorias en paralelo,
   * aleatorizar parámetros por trayectoria (domain randomization),
-  * diferenciar a través de la simulación (BPTT) durante el entrenamiento.
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 
 import numpy as np
-import scipy.linalg as sla
 import torch
 
 
@@ -96,18 +94,6 @@ def linear_model(p: QubeParams):
     ])
     B = np.array([[0.0], [0.0], [km * Jp / (Rm * Jt)], [km * mp * l * r / (Rm * Jt)]])
     return A, B
-
-
-def lqr(A, B, Q, R):
-    """LQR continuo. Devuelve K (1x4) y P (solución de Riccati)."""
-    P = sla.solve_continuous_are(A, B, Q, R)
-    K = np.linalg.solve(R, B.T @ P)
-    return K, P
-
-
-# Pesos LQR de tu proyecto
-Q_LQR = np.diag([1.0, 20.0, 0.1, 0.1])
-R_LQR = np.array([[10.0]])
 
 
 # --------------------------------------------------------------------------

@@ -5,11 +5,14 @@ para la tarea de BALANCE del péndulo invertido.
     * Planta: qube_model.dynamics integrada con RK4 a Ts = 2 ms (como el Simulink).
     * El agente decide cada Ts_agente (por defecto 10 ms = 5 pasos de 2 ms) y la
       acción se mantiene (ZOH) entre decisiones.
-    * Acciones DISCRETAS: voltajes del motor (Q-learning y DQN necesitan un
-      conjunto finito de acciones).
+    * Acciones DISCRETAS: voltajes del motor (DQN necesita un conjunto finito
+      de acciones).
     * Observación = lo que ve el controlador en el hardware:
-      encoders cuantizados (2048 cuentas/rev) y velocidades estimadas con
-      derivada filtrada 50s/(s+50) + ruido. Parámetros físicos aleatorizados.
+      encoders cuantizados (2048 cuentas/rev) y velocidades estimadas con TU
+      OBSERVADOR de 3er orden (subsistema "State X" del Simulink original,
+      a = 100: beta = 3a, L = 3a^2, m = a^3 - L*beta), integrado con Euler a
+      2 ms igual que el solver ode1 del modelo. Parámetros físicos aleatorizados.
+      (sensor="filtro": derivada filtrada 50s/(s+50); sensor="ideal": exacto.)
     * Episodio termina si |alpha| > 25° o |theta| > 120°, o por tiempo (5 s).
 
 N entornos corren en paralelo (tensores de PyTorch), con reinicio automático.
@@ -33,7 +36,7 @@ X_SCALE = np.array([1.0, 0.3, 4.0, 8.0])
 class QubeBalanceEnv:
     def __init__(self, n_envs: int, acciones, Ts_agente: float = 0.01,
                  params: QubeParams | None = None, rel_spread: float = 0.10,
-                 sensor_real: bool = True, vel_noise: float = 0.05,
+                 sensor: str = "observador", vel_noise: float = 0.05,
                  alpha_lim_deg: float = 25.0, theta_lim_deg: float = 120.0,
                  t_max: float = 5.0,
                  init_ranges=(30 * DEG, 15 * DEG, 1.0, 2.0), seed: int = 0,
@@ -46,7 +49,8 @@ class QubeBalanceEnv:
         self.substeps = max(1, int(round(Ts_agente / self.dt)))
         self.Ts_agente = self.substeps * self.dt
         self.rel_spread = rel_spread
-        self.sensor_real = sensor_real
+        assert sensor in ("observador", "filtro", "ideal")
+        self.sensor = sensor
         self.vel_noise = vel_noise
         self.alpha_lim = alpha_lim_deg * DEG
         self.theta_lim = theta_lim_deg * DEG
@@ -56,10 +60,17 @@ class QubeBalanceEnv:
         self.q_enc = 2 * math.pi / self.p.enc_counts
         self.wc = 50.0
         self.w = pesos_costo
+        # Observador de ProyectoControlFinal.m (polos triples en -a)
+        a = 100.0
+        self.obs_beta, self.obs_L = 3 * a, 3 * a ** 2
+        self.obs_m = a ** 3 - self.obs_L * self.obs_beta
 
         self.x = torch.zeros(n_envs, 4)
         self.y_prev = torch.zeros(n_envs, 2)
-        self.v_f = torch.zeros(n_envs, 2)
+        self.v_f = torch.zeros(n_envs, 2)      # velocidad estimada (salida)
+        self.p_o = torch.zeros(n_envs, 2)      # estados del observador
+        self.v_o = torch.zeros(n_envs, 2)
+        self.z_o = torch.zeros(n_envs, 2)
         self.t = torch.zeros(n_envs, dtype=torch.long)
         self.bp = BatchParams(self.p, n_envs, rel_spread, generator=self.gen)
         self.reset(torch.ones(n_envs, dtype=torch.bool))
@@ -81,19 +92,34 @@ class QubeBalanceEnv:
         nb = BatchParams(self.p, k, self.rel_spread, generator=self.gen)
         for name in ("Rm", "km", "mr", "r", "br", "mp", "Lp", "bp", "g", "l", "Jr", "Jp"):
             getattr(self.bp, name)[mask] = getattr(nb, name)
-        self.y_prev[mask] = self._angles(x0)
+        y0 = self._angles(x0)
+        self.y_prev[mask] = y0
         self.v_f[mask] = x0[:, 2:4]
+        # observador ya convergido (el péndulo llega a la zona de balance
+        # después de levantarlo a mano, con el observador corriendo)
+        self.p_o[mask] = y0
+        self.v_o[mask] = x0[:, 2:4]
+        self.z_o[mask] = 0.0
         return self.observe()
 
     def _angles(self, x):
         y = x[:, 0:2]
-        if self.sensor_real:
+        if self.sensor != "ideal":
             y = torch.round(y / self.q_enc) * self.q_enc
         return y
 
     def _update_sensor(self):
         y = self._angles(self.x)
-        if self.sensor_real:
+        if self.sensor == "observador":
+            # salida en k = estado actual; luego Euler (ode1) con la entrada y_k
+            self.v_f = self.v_o.clone()
+            e = y - self.p_o
+            dv = self.obs_L * e + self.obs_m * self.z_o
+            dz = e - self.obs_beta * self.z_o
+            self.p_o = self.p_o + self.dt * self.v_o
+            self.v_o = self.v_o + self.dt * dv
+            self.z_o = self.z_o + self.dt * dz
+        elif self.sensor == "filtro":
             self.v_f = (self.v_f + self.wc * (y - self.y_prev)) / (1 + self.wc * self.dt)
         else:
             self.v_f = self.x[:, 2:4].clone()
@@ -107,7 +133,7 @@ class QubeBalanceEnv:
 
     # ------------------------------------------------------------------
     def costo(self, x, u):
-        """Costo cuadrático tipo LQR: w_th th^2 + w_al al^2 + w_thd thd^2 + w_ald ald^2 + w_u u^2."""
+        """Costo cuadrático: w_th th^2 + w_al al^2 + w_thd thd^2 + w_ald ald^2 + w_u u^2."""
         w = self.w
         return (w[0] * x[:, 0] ** 2 + w[1] * x[:, 1] ** 2 + w[2] * x[:, 2] ** 2
                 + w[3] * x[:, 3] ** 2 + w[4] * u ** 2)

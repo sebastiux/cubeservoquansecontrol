@@ -1,7 +1,7 @@
 function p = qube_params()
 %QUBE_PARAMS Parámetros del Qube-Servo 3 + péndulo (mismos que ProyectoControlFinal.m)
-%   p = qube_params() devuelve un struct con los parámetros físicos, el
-%   modelo lineal (A, B) y la ganancia LQR K con Q = diag([1 20 .1 .1]), R = 10.
+%   p = qube_params() devuelve un struct con los parámetros físicos y el
+%   modelo lineal (A, B) solo como referencia (verificación del modelo).
 %   Deben coincidir con python/qube_model.py (QubeParams).
 
 % Motor
@@ -41,12 +41,4 @@ B4  = (p.km*p.mp*p.l*p.r)/(p.Rm*Jt);
 p.A = [0 0 1 0; 0 0 0 1; 0 A32 A33 A34; 0 A42 A43 A44];
 p.B = [0; 0; B3; B4];
 
-p.Q = diag([1 20 .1 .1]);
-p.R = 10;
-if exist('lqr', 'file') == 2 || exist('lqr', 'builtin') == 5
-    p.K = lqr(p.A, p.B, p.Q, p.R);
-else
-    % Sin Control System Toolbox: valor calculado con scipy (mismo Q, R)
-    p.K = [-0.316227766 23.245193248 -0.594815610 1.870086840];
-end
 end

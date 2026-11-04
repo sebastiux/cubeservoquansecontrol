@@ -35,6 +35,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from qube_model import QubeParams, linear_model, linearize_numeric
 from rl_env import DEG, X_SCALE, QubeBalanceEnv
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -186,6 +187,12 @@ def main():
     if args.quick:
         args.pasos, args.eval_cada, args.eps_pasos = 4_000, 1_000, 2_000
 
+    # Verificación: el modelo no lineal linealizado en x=0 == A, B de tu .m
+    A, B = linear_model(QubeParams())
+    An, Bn = linearize_numeric(QubeParams())
+    print(f"[modelo] error linealización vs A,B de ProyectoControlFinal.m: "
+          f"{max(abs(A - An).max(), abs(B - Bn).max()):.1e}")
+
     torch.manual_seed(args.seed)
     gen = torch.Generator().manual_seed(args.seed)
     acciones = ACCIONES_DQN
@@ -240,7 +247,8 @@ def main():
                 if n_grad % args.target_cada == 0:
                     q_obj.load_state_dict(q.state_dict())
 
-        sched.step()
+        if len(buf) >= args.warmup:
+            sched.step()
         if paso % args.eval_cada == 0 or paso == args.pasos:
             exito, sobrevive = evaluar(lambda y: q(y).argmax(1), acciones,
                                        Ts_agente=args.ts_agente)
