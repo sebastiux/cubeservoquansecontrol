@@ -10,6 +10,14 @@
 
 clc; clear; close all;
 here = fileparts(mfilename('fullpath'));
+if exist(fullfile(here, 'cargar_red_dqn.m'), 'file') ~= 2      % script copiado a otra carpeta
+    w_ = which('cargar_red_dqn');
+    if isempty(w_)
+        error(['No encuentro los archivos del proyecto. Ejecuta este script desde la carpeta ' ...
+               '"matlab" del repositorio o agrégala al path: addpath(''C:/ruta/cubeservoquansecontrol/matlab'')']);
+    end
+    here = fileparts(w_);
+end
 addpath(here);
 cargar_red_dqn;                                  % red_dqn, Ts_agente
 fig_dir = fullfile(here, '..', 'models', 'figuras');

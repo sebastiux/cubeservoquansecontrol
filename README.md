@@ -218,6 +218,30 @@ Recomendaciones para la primera prueba:
 
 ---
 
+## Errores comunes
+
+**`Unrecognized function or variable 'cargar_red_dqn'`**
+El script se ejecutó fuera del proyecto, por ejemplo una copia renombrada en
+otra carpeta. Los scripts necesitan los demás archivos de `matlab/` y la red
+de `models/`. Hay tres soluciones:
+1. Ejecuta los scripts originales desde la carpeta del repositorio:
+   ```matlab
+   cd('C:/ruta/cubeservoquansecontrol/matlab')
+   construir_entorno_pruebas
+   ```
+2. Si quieres trabajar desde otra carpeta, agrega primero el proyecto al path:
+   ```matlab
+   addpath('C:/ruta/cubeservoquansecontrol/matlab')
+   ```
+3. Desde la versión actual, si el script no encuentra el proyecto, MATLAB
+   abre un selector de carpeta: elige la carpeta `cubeservoquansecontrol` o
+   su subcarpeta `matlab`.
+
+No muevas archivos sueltos: `matlab/`, `models/` y `simulink/` deben quedar
+juntas dentro de la misma carpeta del proyecto.
+
+---
+
 ## Detalles técnicos
 
 **Modelo no lineal** (`x = [θ, α, θ̇, α̇]`, α = 0 arriba; Jr, Jp respecto al pivote):

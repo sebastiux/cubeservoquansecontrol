@@ -19,10 +19,12 @@ function construir_entorno_pruebas(simular)
 %   (radianes) en el workspace antes de dar Run.
 
 if nargin < 1, simular = true; end
-here = fileparts(mfilename('fullpath'));
+here = ubicar_carpeta_matlab(mfilename('fullpath'));   % carpeta matlab/ del proyecto
 addpath(here);
 mdl = 'qube_dqn_pruebas';
-destino = fullfile(here, '..', 'simulink', [mdl '.slx']);
+carpeta_slx = fullfile(here, '..', 'simulink');
+if ~exist(carpeta_slx, 'dir'), mkdir(carpeta_slx); end
+destino = fullfile(carpeta_slx, [mdl '.slx']);
 
 evalin('base', 'cargar_red_dqn; variables_entorno_pruebas;');
 
@@ -30,8 +32,10 @@ if bdIsLoaded(mdl), close_system(mdl, 0); end
 if exist(destino, 'file'), delete(destino); end
 new_system(mdl);
 open_system(mdl);
-init = sprintf(['addpath(fullfile(fileparts(get_param(''%s'', ''FileName'')), ''..'', ''matlab''));\n' ...
-                'cargar_red_dqn;\nvariables_entorno_pruebas;'], mdl);
+init = sprintf(['d_ = fullfile(fileparts(get_param(''%s'', ''FileName'')), ''..'', ''matlab'');\n' ...
+                'if ~exist(fullfile(d_, ''cargar_red_dqn.m''), ''file''), d_ = ''%s''; end\n' ...
+                'addpath(d_); clear d_\n' ...
+                'cargar_red_dqn;\nvariables_entorno_pruebas;'], mdl, strrep(here, '''', ''''''));
 set_param(mdl, 'Solver', 'ode4', 'FixedStep', 'Ts', 'StopTime', '10', ...
           'ReturnWorkspaceOutputs', 'on', 'InitFcn', init);
 
@@ -156,4 +160,36 @@ for k = 1:numel(param_names)
     d = ch.find('-isa', 'Stateflow.Data', 'Name', param_names{k});
     d.Scope = 'Parameter';
 end
+end
+
+function d = ubicar_carpeta_matlab(archivo)
+% Devuelve la carpeta matlab/ del proyecto (la que contiene cargar_red_dqn.m
+% y, al lado, models/dqn_qube.mat), aunque este archivo se haya copiado o
+% renombrado en otra carpeta.
+base = fileparts(archivo);
+cand = {base, fullfile(base, 'matlab'), fullfile(base, '..', 'matlab'), ...
+        fullfile(base, 'cubeservoquansecontrol', 'matlab'), pwd, fullfile(pwd, 'matlab')};
+w = which('cargar_red_dqn');
+if ~isempty(w), cand{end+1} = fileparts(w); end
+for k = 1:numel(cand)
+    if es_carpeta_matlab(cand{k}), d = cand{k}; return; end
+end
+% No se encontró: pedirla al usuario
+if usejava('desktop')
+    sel = uigetdir(pwd, 'Selecciona la carpeta del proyecto cubeservoquansecontrol (o su carpeta matlab)');
+    if ischar(sel)
+        for c = {sel, fullfile(sel, 'matlab')}
+            if es_carpeta_matlab(c{1}), d = c{1}; return; end
+        end
+    end
+end
+error('cubeservo:rutas', '%s', sprintf(['No encuentro los archivos del proyecto (cargar_red_dqn.m y models/dqn_qube.mat).\n' ...
+       'Ejecuta el script desde la carpeta "matlab" del repositorio cubeservoquansecontrol\n' ...
+       '(no copies el archivo suelto a otra carpeta), o agrega esa carpeta al path:\n' ...
+       '   addpath(''C:/ruta/cubeservoquansecontrol/matlab'')']));
+end
+
+function ok = es_carpeta_matlab(d)
+ok = exist(fullfile(d, 'cargar_red_dqn.m'), 'file') == 2 && ...
+     exist(fullfile(d, '..', 'models', 'dqn_qube.mat'), 'file') == 2;
 end

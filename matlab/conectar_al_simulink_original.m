@@ -19,7 +19,7 @@ function nuevo = conectar_al_simulink_original(modelo_original)
 %   * La InitFcn del modelo ejecuta cargar_red_dqn (red_dqn, Ts_agente y las
 %     ganancias L, beta, m de tus observadores si no existen).
 
-here = fileparts(mfilename('fullpath'));
+here = ubicar_carpeta_matlab(mfilename('fullpath'));   % carpeta matlab/ del proyecto
 if nargin < 1 || isempty(modelo_original)
     modelo_original = fullfile(here, '..', 'simulink', 'qs3_lqr_ctrl_simulinkFInal.slx');
 end
@@ -81,8 +81,9 @@ L(ph_rt.Outport(1),   ph_sw.Inport(3));       % dato "1" del switch de balance
 
 % ---------------------------------------------------------- InitFcn
 init = get_param(nuevo, 'InitFcn');
-cmd  = sprintf(['addpath(fullfile(fileparts(get_param(''%s'', ''FileName'')), ''..'', ''matlab''));\n' ...
-                'cargar_red_dqn;'], nuevo);
+cmd  = sprintf(['d_ = fullfile(fileparts(get_param(''%s'', ''FileName'')), ''..'', ''matlab'');\n' ...
+                'if ~exist(fullfile(d_, ''cargar_red_dqn.m''), ''file''), d_ = ''%s''; end\n' ...
+                'addpath(d_); clear d_\ncargar_red_dqn;'], nuevo, strrep(here, '''', ''''''));
 if ~contains(init, 'cargar_red_dqn')
     set_param(nuevo, 'InitFcn', strtrim(sprintf('%s\n%s', init, cmd)));
 end
@@ -111,4 +112,36 @@ for k = 1:numel(param_names)
     d = ch.find('-isa', 'Stateflow.Data', 'Name', param_names{k});
     d.Scope = 'Parameter';
 end
+end
+
+function d = ubicar_carpeta_matlab(archivo)
+% Devuelve la carpeta matlab/ del proyecto (la que contiene cargar_red_dqn.m
+% y, al lado, models/dqn_qube.mat), aunque este archivo se haya copiado o
+% renombrado en otra carpeta.
+base = fileparts(archivo);
+cand = {base, fullfile(base, 'matlab'), fullfile(base, '..', 'matlab'), ...
+        fullfile(base, 'cubeservoquansecontrol', 'matlab'), pwd, fullfile(pwd, 'matlab')};
+w = which('cargar_red_dqn');
+if ~isempty(w), cand{end+1} = fileparts(w); end
+for k = 1:numel(cand)
+    if es_carpeta_matlab(cand{k}), d = cand{k}; return; end
+end
+% No se encontró: pedirla al usuario
+if usejava('desktop')
+    sel = uigetdir(pwd, 'Selecciona la carpeta del proyecto cubeservoquansecontrol (o su carpeta matlab)');
+    if ischar(sel)
+        for c = {sel, fullfile(sel, 'matlab')}
+            if es_carpeta_matlab(c{1}), d = c{1}; return; end
+        end
+    end
+end
+error('cubeservo:rutas', '%s', sprintf(['No encuentro los archivos del proyecto (cargar_red_dqn.m y models/dqn_qube.mat).\n' ...
+       'Ejecuta el script desde la carpeta "matlab" del repositorio cubeservoquansecontrol\n' ...
+       '(no copies el archivo suelto a otra carpeta), o agrega esa carpeta al path:\n' ...
+       '   addpath(''C:/ruta/cubeservoquansecontrol/matlab'')']));
+end
+
+function ok = es_carpeta_matlab(d)
+ok = exist(fullfile(d, 'cargar_red_dqn.m'), 'file') == 2 && ...
+     exist(fullfile(d, '..', 'models', 'dqn_qube.mat'), 'file') == 2;
 end
