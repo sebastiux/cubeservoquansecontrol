@@ -9,15 +9,38 @@
 %   4) Monte Carlo: 500 casos, parámetros ±15 %, ruido en velocidades
 
 clc; clear; close all;
+% ===================== CONFIGURA AQUÍ TU RUTA (opcional) =====================
+% Carpeta donde está el proyecto (la que contiene matlab/, models/ y simulink/).
+% Ejemplo: RUTA_PROYECTO = 'C:\Users\TuUsuario\Documents\cubeservoquansecontrol';
+% Déjala vacía ('') para que el script la busque solo.
+RUTA_PROYECTO = '';
+% ==============================================================================
+
+% --- localizar la carpeta matlab/ del proyecto
 here = fileparts(mfilename('fullpath'));
-if exist(fullfile(here, 'cargar_red_dqn.m'), 'file') ~= 2      % script copiado a otra carpeta
+if ~isempty(RUTA_PROYECTO)
+    cand_ = {RUTA_PROYECTO, fullfile(RUTA_PROYECTO, 'matlab')};
+else
+    cand_ = {here, fullfile(here, 'matlab'), fullfile(here, '..', 'matlab'), pwd, fullfile(pwd, 'matlab')};
     w_ = which('cargar_red_dqn');
-    if isempty(w_)
-        error(['No encuentro los archivos del proyecto. Ejecuta este script desde la carpeta ' ...
-               '"matlab" del repositorio o agrégala al path: addpath(''C:/ruta/cubeservoquansecontrol/matlab'')']);
-    end
-    here = fileparts(w_);
+    if ~isempty(w_), cand_{end+1} = fileparts(w_); end
 end
+dir_ok_ = '';
+fprintf('Este script está en: %s\nCarpeta actual (pwd): %s\n', here, pwd);
+for k_ = 1:numel(cand_)
+    a_ = exist(fullfile(cand_{k_}, 'cargar_red_dqn.m'), 'file') == 2;
+    b_ = exist(fullfile(cand_{k_}, '..', 'models', 'dqn_qube.mat'), 'file') == 2;
+    if a_ && b_, dir_ok_ = cand_{k_}; break; end
+    fprintf('   no está en %s  (cargar_red_dqn.m: %d, ../models/dqn_qube.mat: %d)\n', cand_{k_}, a_, b_);
+end
+if isempty(dir_ok_)
+    error(['No encuentro los archivos del proyecto (ver arriba dónde busqué). Escribe en ' ...
+           'RUTA_PROYECTO, al inicio de este archivo, la carpeta del proyecto completo ' ...
+           '(la que contiene matlab, models y simulink).']);
+end
+here = dir_ok_;
+fprintf('Proyecto encontrado en: %s\n\n', here);
+clear cand_ w_ dir_ok_ k_ a_ b_
 addpath(here);
 cargar_red_dqn;                                  % red_dqn, Ts_agente
 fig_dir = fullfile(here, '..', 'models', 'figuras');

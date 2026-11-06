@@ -220,25 +220,32 @@ Recomendaciones para la primera prueba:
 
 ## Errores comunes
 
-**`Unrecognized function or variable 'cargar_red_dqn'`**
-El script se ejecutó fuera del proyecto, por ejemplo una copia renombrada en
-otra carpeta. Los scripts necesitan los demás archivos de `matlab/` y la red
-de `models/`. Hay tres soluciones:
-1. Ejecuta los scripts originales desde la carpeta del repositorio:
-   ```matlab
-   cd('C:/ruta/cubeservoquansecontrol/matlab')
-   construir_entorno_pruebas
-   ```
-2. Si quieres trabajar desde otra carpeta, agrega primero el proyecto al path:
-   ```matlab
-   addpath('C:/ruta/cubeservoquansecontrol/matlab')
-   ```
-3. Desde la versión actual, si el script no encuentra el proyecto, MATLAB
-   abre un selector de carpeta: elige la carpeta `cubeservoquansecontrol` o
-   su subcarpeta `matlab`.
+**`No encuentro los archivos del proyecto` / `Unrecognized function or variable 'cargar_red_dqn'`**
 
-No muevas archivos sueltos: `matlab/`, `models/` y `simulink/` deben quedar
-juntas dentro de la misma carpeta del proyecto.
+Los scripts necesitan el proyecto completo: `matlab/`, `models/` (con
+`dqn_qube.mat`) y `simulink/` dentro de la misma carpeta. El error indica en
+qué carpetas buscó y qué le faltó en cada una.
+
+1. Averigua dónde está todo, en la Command Window de MATLAB:
+   ```matlab
+   pwd                                   % carpeta actual de MATLAB
+   which prueba_dqn_modelo_no_lineal     % dónde está el script que ejecutas
+   which cargar_red_dqn                  % ¿MATLAB ve los archivos del proyecto?
+   ```
+2. Fija tu ruta: al inicio de `prueba_dqn_modelo_no_lineal.m`,
+   `construir_entorno_pruebas.m` y `conectar_al_simulink_original.m` hay una línea
+   ```matlab
+   RUTA_PROYECTO = '';
+   ```
+   Escribe ahí la carpeta del proyecto completo, por ejemplo
+   `RUTA_PROYECTO = 'C:\Users\TuUsuario\Documents\cubeservoquansecontrol';`.
+3. Otra opción es entrar a la carpeta antes de ejecutar:
+   `cd('C:\Users\TuUsuario\Documents\cubeservoquansecontrol\matlab')`.
+
+Si `which cargar_red_dqn` responde `not found` y la carpeta no tiene
+`matlab/cargar_red_dqn.m` ni `models/dqn_qube.mat`, descargaste solo algunos
+archivos. Descarga el proyecto completo con `git clone`, o en GitHub con
+*Code → Download ZIP* de la rama `claude/wizardly-darwin-rmg1zu`.
 
 ---
 

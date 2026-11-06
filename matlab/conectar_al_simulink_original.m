@@ -19,7 +19,13 @@ function nuevo = conectar_al_simulink_original(modelo_original)
 %   * La InitFcn del modelo ejecuta cargar_red_dqn (red_dqn, Ts_agente y las
 %     ganancias L, beta, m de tus observadores si no existen).
 
-here = ubicar_carpeta_matlab(mfilename('fullpath'));   % carpeta matlab/ del proyecto
+% ===================== CONFIGURA AQUÍ TU RUTA (opcional) =====================
+% Carpeta donde está el proyecto (la que contiene matlab/, models/ y simulink/).
+% Ejemplo: RUTA_PROYECTO = 'C:\Users\TuUsuario\Documents\cubeservoquansecontrol';
+% Déjala vacía ('') para que el script la busque solo.
+RUTA_PROYECTO = '';
+% ==============================================================================
+here = ubicar_carpeta_matlab(mfilename('fullpath'), RUTA_PROYECTO);   % carpeta matlab/ del proyecto
 if nargin < 1 || isempty(modelo_original)
     modelo_original = fullfile(here, '..', 'simulink', 'qs3_lqr_ctrl_simulinkFInal.slx');
 end
@@ -114,34 +120,54 @@ for k = 1:numel(param_names)
 end
 end
 
-function d = ubicar_carpeta_matlab(archivo)
+function d = ubicar_carpeta_matlab(archivo, ruta_usuario)
 % Devuelve la carpeta matlab/ del proyecto (la que contiene cargar_red_dqn.m
-% y, al lado, models/dqn_qube.mat), aunque este archivo se haya copiado o
-% renombrado en otra carpeta.
+% y, al lado, models/dqn_qube.mat).
+%   ruta_usuario: RUTA_PROYECTO definida arriba ('' = buscar sola)
 base = fileparts(archivo);
-cand = {base, fullfile(base, 'matlab'), fullfile(base, '..', 'matlab'), ...
-        fullfile(base, 'cubeservoquansecontrol', 'matlab'), pwd, fullfile(pwd, 'matlab')};
-w = which('cargar_red_dqn');
-if ~isempty(w), cand{end+1} = fileparts(w); end
+if ~isempty(ruta_usuario)
+    cand = {ruta_usuario, fullfile(ruta_usuario, 'matlab')};
+else
+    cand = {base, fullfile(base, 'matlab'), fullfile(base, '..', 'matlab'), ...
+            fullfile(base, 'cubeservoquansecontrol', 'matlab'), pwd, fullfile(pwd, 'matlab')};
+    w = which('cargar_red_dqn');
+    if ~isempty(w), cand{end+1} = fileparts(w); end
+end
 for k = 1:numel(cand)
     if es_carpeta_matlab(cand{k}), d = cand{k}; return; end
 end
-% No se encontró: pedirla al usuario
-if usejava('desktop')
+% No se encontró: pedirla al usuario (solo si no fijó RUTA_PROYECTO)
+if isempty(ruta_usuario) && usejava('desktop')
     sel = uigetdir(pwd, 'Selecciona la carpeta del proyecto cubeservoquansecontrol (o su carpeta matlab)');
     if ischar(sel)
         for c = {sel, fullfile(sel, 'matlab')}
             if es_carpeta_matlab(c{1}), d = c{1}; return; end
         end
+        cand = [cand, {sel, fullfile(sel, 'matlab')}];
     end
 end
-error('cubeservo:rutas', '%s', sprintf(['No encuentro los archivos del proyecto (cargar_red_dqn.m y models/dqn_qube.mat).\n' ...
-       'Ejecuta el script desde la carpeta "matlab" del repositorio cubeservoquansecontrol\n' ...
-       '(no copies el archivo suelto a otra carpeta), o agrega esa carpeta al path:\n' ...
-       '   addpath(''C:/ruta/cubeservoquansecontrol/matlab'')']));
+error('cubeservo:rutas', '%s', diagnostico_rutas(archivo, cand));
 end
 
 function ok = es_carpeta_matlab(d)
 ok = exist(fullfile(d, 'cargar_red_dqn.m'), 'file') == 2 && ...
      exist(fullfile(d, '..', 'models', 'dqn_qube.mat'), 'file') == 2;
+end
+
+function msg = diagnostico_rutas(archivo, cand)
+msg = sprintf(['No encuentro los archivos del proyecto.\n' ...
+               'Este script está en:   %s\n' ...
+               'Carpeta actual (pwd):  %s\n' ...
+               'Busqué en (matlab/cargar_red_dqn.m | models/dqn_qube.mat):\n'], archivo, pwd);
+for k = 1:numel(cand)
+    msg = [msg, sprintf('   %-60s  %s | %s\n', cand{k}, ...
+           si_no(exist(fullfile(cand{k}, 'cargar_red_dqn.m'), 'file') == 2), ...
+           si_no(exist(fullfile(cand{k}, '..', 'models', 'dqn_qube.mat'), 'file') == 2))]; %#ok<AGROW>
+end
+msg = [msg, sprintf(['Solución: escribe en RUTA_PROYECTO (al inicio de este archivo) la carpeta\n' ...
+                     'donde descargaste el proyecto completo, la que contiene matlab/, models/ y simulink/.'])];
+end
+
+function s = si_no(b)
+if b, s = 'sí'; else, s = 'NO'; end
 end
