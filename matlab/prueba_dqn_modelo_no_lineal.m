@@ -10,8 +10,9 @@
 
 clc; clear; close all;
 % ===================== CONFIGURA AQUÍ TU RUTA (opcional) =====================
-% Carpeta donde está el proyecto (la que contiene matlab/, models/ y simulink/).
-% Ejemplo: RUTA_PROYECTO = 'C:\Users\TuUsuario\Documents\cubeservoquansecontrol';
+% Carpeta del proyecto (la que contiene matlab/, models/ y simulink/), o la
+% carpeta donde copiaste todo junto con instalar_en_carpeta.
+% Ejemplo: RUTA_PROYECTO = 'C:\Users\csohs\OneDrive\Documents\MATLAB';
 % Déjala vacía ('') para que el script la busque solo.
 RUTA_PROYECTO = '';
 % ==============================================================================
@@ -29,21 +30,23 @@ dir_ok_ = '';
 fprintf('Este script está en: %s\nCarpeta actual (pwd): %s\n', here, pwd);
 for k_ = 1:numel(cand_)
     a_ = exist(fullfile(cand_{k_}, 'cargar_red_dqn.m'), 'file') == 2;
-    b_ = exist(fullfile(cand_{k_}, '..', 'models', 'dqn_qube.mat'), 'file') == 2;
+    b_ = exist(fullfile(cand_{k_}, '..', 'models', 'dqn_qube.mat'), 'file') == 2 || ...
+         exist(fullfile(cand_{k_}, 'models', 'dqn_qube.mat'), 'file') == 2 || ...
+         exist(fullfile(cand_{k_}, 'dqn_qube.mat'), 'file') == 2;
     if a_ && b_, dir_ok_ = cand_{k_}; break; end
-    fprintf('   no está en %s  (cargar_red_dqn.m: %d, ../models/dqn_qube.mat: %d)\n', cand_{k_}, a_, b_);
+    fprintf('   no está en %s  (cargar_red_dqn.m: %d, dqn_qube.mat: %d)\n', cand_{k_}, a_, b_);
 end
 if isempty(dir_ok_)
     error(['No encuentro los archivos del proyecto (ver arriba dónde busqué). Escribe en ' ...
            'RUTA_PROYECTO, al inicio de este archivo, la carpeta del proyecto completo ' ...
-           '(la que contiene matlab, models y simulink).']);
+           '(la que contiene matlab, models y simulink) o la carpeta donde copiaste todo con instalar_en_carpeta.']);
 end
 here = dir_ok_;
 fprintf('Proyecto encontrado en: %s\n\n', here);
 clear cand_ w_ dir_ok_ k_ a_ b_
 addpath(here);
-cargar_red_dqn;                                  % red_dqn, Ts_agente
-fig_dir = fullfile(here, '..', 'models', 'figuras');
+cargar_red_dqn;                                  % red_dqn, Ts_agente, archivo_red
+fig_dir = fullfile(fileparts(archivo_red), 'figuras');
 if ~exist(fig_dir, 'dir'), mkdir(fig_dir); end
 
 p   = qube_params();
@@ -51,7 +54,7 @@ d2r = pi/180;
 ctrl = @(y) politica_dqn(y, red_dqn);
 
 %% 1) Verificación contra Python
-m_ = load(fullfile(here, '..', 'models', 'dqn_qube.mat'));
+m_ = load(archivo_red);
 u_vec = politica_dqn(m_.x_test', red_dqn);
 u_blk = zeros(1, size(m_.x_test, 1));
 for k = 1:numel(u_blk)

@@ -20,8 +20,9 @@ function construir_entorno_pruebas(simular)
 
 if nargin < 1, simular = true; end
 % ===================== CONFIGURA AQUÍ TU RUTA (opcional) =====================
-% Carpeta donde está el proyecto (la que contiene matlab/, models/ y simulink/).
-% Ejemplo: RUTA_PROYECTO = 'C:\Users\TuUsuario\Documents\cubeservoquansecontrol';
+% Carpeta del proyecto (la que contiene matlab/, models/ y simulink/), o la
+% carpeta donde copiaste todo junto con instalar_en_carpeta.
+% Ejemplo: RUTA_PROYECTO = 'C:\Users\csohs\OneDrive\Documents\MATLAB';
 % Déjala vacía ('') para que el script la busque solo.
 RUTA_PROYECTO = '';
 % ==============================================================================
@@ -29,7 +30,7 @@ here = ubicar_carpeta_matlab(mfilename('fullpath'), RUTA_PROYECTO);   % carpeta 
 addpath(here);
 mdl = 'qube_dqn_pruebas';
 carpeta_slx = fullfile(here, '..', 'simulink');
-if ~exist(carpeta_slx, 'dir'), mkdir(carpeta_slx); end
+if ~exist(carpeta_slx, 'dir'), carpeta_slx = here; end    % todo junto en una carpeta
 destino = fullfile(carpeta_slx, [mdl '.slx']);
 
 evalin('base', 'cargar_red_dqn; variables_entorno_pruebas;');
@@ -198,22 +199,31 @@ error('cubeservo:rutas', '%s', diagnostico_rutas(archivo, cand));
 end
 
 function ok = es_carpeta_matlab(d)
-ok = exist(fullfile(d, 'cargar_red_dqn.m'), 'file') == 2 && ...
-     exist(fullfile(d, '..', 'models', 'dqn_qube.mat'), 'file') == 2;
+ok = exist(fullfile(d, 'cargar_red_dqn.m'), 'file') == 2 && ~isempty(buscar_red(d));
 end
+
+function f = buscar_red(d)
+% Ubicación de dqn_qube.mat: proyecto completo (../models) o todo junto en una carpeta
+f = '';
+for c = {fullfile(d, '..', 'models', 'dqn_qube.mat'), fullfile(d, 'models', 'dqn_qube.mat'), fullfile(d, 'dqn_qube.mat')}
+    if exist(c{1}, 'file') == 2, f = c{1}; return; end
+end
+end
+
 
 function msg = diagnostico_rutas(archivo, cand)
 msg = sprintf(['No encuentro los archivos del proyecto.\n' ...
                'Este script está en:   %s\n' ...
                'Carpeta actual (pwd):  %s\n' ...
-               'Busqué en (matlab/cargar_red_dqn.m | models/dqn_qube.mat):\n'], archivo, pwd);
+               'Busqué en (cargar_red_dqn.m | dqn_qube.mat):\n'], archivo, pwd);
 for k = 1:numel(cand)
     msg = [msg, sprintf('   %-60s  %s | %s\n', cand{k}, ...
            si_no(exist(fullfile(cand{k}, 'cargar_red_dqn.m'), 'file') == 2), ...
-           si_no(exist(fullfile(cand{k}, '..', 'models', 'dqn_qube.mat'), 'file') == 2))]; %#ok<AGROW>
+           si_no(~isempty(buscar_red(cand{k}))))]; %#ok<AGROW>
 end
 msg = [msg, sprintf(['Solución: escribe en RUTA_PROYECTO (al inicio de este archivo) la carpeta\n' ...
-                     'donde descargaste el proyecto completo, la que contiene matlab/, models/ y simulink/.'])];
+                     'del proyecto (la que contiene matlab/, models/ y simulink/), o la carpeta donde\n' ...
+                     'copiaste todo junto con instalar_en_carpeta (p. ej. Documents\\MATLAB).'])];
 end
 
 function s = si_no(b)

@@ -110,6 +110,24 @@ targets acotados, Huber y entornos en paralelo. Red Q: 4 → 128 → 128 → 11 
 
 ---
 
+## (Opcional) Tener todo en tu carpeta de MATLAB
+
+Si prefieres trabajar desde tu carpeta de MATLAB (p. ej.
+`C:\Users\TuUsuario\OneDrive\Documents\MATLAB`), copia todo ahí una sola vez.
+Desde la carpeta `matlab/` del proyecto descargado:
+
+```matlab
+instalar_en_carpeta('C:\Users\TuUsuario\OneDrive\Documents\MATLAB')
+```
+
+Copia los `.m`, la red `dqn_qube.mat` y tu modelo `qs3_lqr_ctrl_simulinkFInal.slx`
+en esa carpeta, sin subcarpetas. Después ejecuta todo desde ahí
+(`prueba_dqn_modelo_no_lineal`, `construir_entorno_pruebas`,
+`conectar_al_simulink_original`). Los modelos `.slx` y las figuras se guardan en
+esa misma carpeta. Si reentrenas la red, vuelve a ejecutar `instalar_en_carpeta`.
+
+---
+
 ## PARTE A — Entorno de pruebas SIN licencia de Quanser
 
 ### A1. Prueba rápida en script (no necesita Simulink)
