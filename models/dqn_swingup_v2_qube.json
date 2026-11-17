@@ -1,0 +1,67 @@
+{
+  "acciones": [
+    -10.0,
+    -6.0,
+    -3.5,
+    -2.0,
+    -1.0,
+    -0.5,
+    -0.2,
+    0.0,
+    0.2,
+    0.5,
+    1.0,
+    2.0,
+    3.5,
+    6.0,
+    10.0
+  ],
+  "Ts_agente": 0.01,
+  "validacion": {
+    "exito": 0.9929999709129333,
+    "theta_max": 119.28889868443585,
+    "t_subida": 0.7971197366714478,
+    "t_subida_max": 2.129999876022339,
+    "temblor_alpha": 0.28397477305765334,
+    "du_rms": 0.9421442747116089
+  },
+  "validacion_nominal": {
+    "exito": 1.0,
+    "theta_max": 116.11895324911957,
+    "t_subida": 0.7156250476837158,
+    "t_subida_max": 0.9899999499320984,
+    "temblor_alpha": 0.23174578389802034,
+    "du_rms": 0.969191312789917
+  },
+  "validacion_brazo_ligero": {
+    "exito": 1.0,
+    "theta_max": 112.54813718122608,
+    "t_subida": 0.6714062690734863,
+    "t_subida_max": 0.9199999570846558,
+    "temblor_alpha": 0.3520951844970995,
+    "du_rms": 0.9660083651542664
+  },
+  "args": {
+    "seed": 0,
+    "n_envs": 32,
+    "pasos": 90000,
+    "updates": 2,
+    "batch": 256,
+    "gamma": 0.995,
+    "nstep": 10,
+    "lr": 0.0003,
+    "target_cada": 1000,
+    "buffer": 1000000,
+    "warmup": 10000,
+    "eps_pasos": 10000,
+    "eps_final": 0.05,
+    "ts_agente": 0.01,
+    "theta_lim": 120.0,
+    "hidden": [
+      256,
+      256
+    ],
+    "eval_cada": 5000,
+    "eps_inicial": 0.15
+  }
+}

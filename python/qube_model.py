@@ -129,6 +129,9 @@ def dynamics(x: torch.Tensor, u: torch.Tensor, p: BatchParams) -> torch.Tensor:
     m22 = p.Jp
 
     c1 = tau - p.br * th_d - 2 * p.Jp * s * c * th_d * al_d - p.mp * p.l * p.r * s * al_d ** 2
+    tau_c = getattr(p, "tau_c", None)          # fricción seca del brazo (opcional)
+    if tau_c is not None:
+        c1 = c1 - tau_c * torch.tanh(th_d / 0.1)
     c2 = -p.bp * al_d + p.Jp * s * c * th_d ** 2 + p.mp * p.g * p.l * s
 
     det = m11 * m22 - m12 ** 2

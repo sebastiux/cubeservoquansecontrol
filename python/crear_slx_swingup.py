@@ -1,16 +1,18 @@
 """
-Genera simulink/qs3_dqn_swingup_ctrl.slx a partir del modelo original de
+Genera simulink/qs3_dqn_swingup_v2_ctrl.slx a partir del modelo original de
 Quanser (qs3_lqr_ctrl_simulinkFInal.slx) SIN usar Simulink: un .slx es un
 zip de archivos XML y aquí se editan directamente.
 
 Cambios respecto al original:
   * El bloque "MATLAB Function" (antes: condición |alpha| <= 15°) pasa a ser
     el controlador DQN de swing-up + balance. Carga la red con
-    coder.load('dqn_swingup_qube.mat') y recibe la señal X completa.
+    coder.load('dqn_swingup_v2_qube.mat') y recibe la señal X completa.
   * Se eliminan: ganancia "u = -K*x", Sum, switch de balance y constante 0 V.
   * Se añade un Zero-Order Hold de 2 ms entre X y el controlador.
   * Las ganancias L, beta, m de los observadores quedan escritas como números
     (a = 100), así el modelo no necesita variables en el workspace.
+  * Dos bloques To Workspace (datos_x, datos_u) registran a 2 ms la señal X y
+    el voltaje, para calibrar el modelo con mediciones del Qube real.
 
 Uso:
     python crear_slx_swingup.py
@@ -27,11 +29,11 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 ORIGINAL = ROOT / "simulink" / "qs3_lqr_ctrl_simulinkFInal.slx"
-DESTINO = ROOT / "simulink" / "qs3_dqn_swingup_ctrl.slx"
+DESTINO = ROOT / "simulink" / "qs3_dqn_swingup_v2_ctrl.slx"
 BLOQUE = ROOT / "matlab" / "dqn_swingup_block.m"
-NOMBRE_MAT = "dqn_swingup_qube.mat"
+NOMBRE_MAT = "dqn_swingup_v2_qube.mat"
 
-SID_ZOH = 302          # SID nuevo (el original llega a 301)
+SID_ZOH, SID_LOGX, SID_LOGU = 302, 303, 304      # SID nuevos (el original llega a 301)
 
 
 def quitar_bloque(s: str, sid: int) -> str:
@@ -55,7 +57,7 @@ def reemplazar(s: str, viejo: str, nuevo: str, veces: int = 1) -> str:
 
 
 def editar_raiz(s: str) -> str:
-    s = reemplazar(s, '<P Name="SIDHighWatermark">301</P>', f'<P Name="SIDHighWatermark">{SID_ZOH}</P>')
+    s = reemplazar(s, '<P Name="SIDHighWatermark">301</P>', f'<P Name="SIDHighWatermark">{SID_LOGU}</P>')
 
     # --- fuera LQR, switch de balance y constante 0 V
     for sid in (201, 199, 164, 202):
@@ -98,24 +100,58 @@ def editar_raiz(s: str) -> str:
     <P Name="ZOrder">4495</P>
     <P Name="SampleTime">0.002</P>
   </Block>
+  <Block BlockType="ToWorkspace" Name="datos_x" SID="{SID_LOGX}">
+    <P Name="Position">[0, 540, 70, 570]</P>
+    <P Name="ZOrder">4496</P>
+    <P Name="VariableName">datos_x</P>
+    <P Name="MaxDataPoints">inf</P>
+    <P Name="SampleTime">0.002</P>
+    <P Name="SaveFormat">Structure With Time</P>
+  </Block>
+  <Block BlockType="ToWorkspace" Name="datos_u" SID="{SID_LOGU}">
+    <P Name="Position">[185, 540, 255, 570]</P>
+    <P Name="ZOrder">4497</P>
+    <P Name="VariableName">datos_u</P>
+    <P Name="MaxDataPoints">inf</P>
+    <P Name="SampleTime">0.002</P>
+    <P Name="SaveFormat">Structure With Time</P>
+  </Block>
 """
     lineas = f"""  <Line>
     <P Name="ZOrder">415</P>
     <P Name="Src">{SID_ZOH}#out:1</P>
-    <P Name="Dst">213#in:1</P>
+    <P Name="Points">[20, 0]</P>
+    <Branch>
+      <P Name="ZOrder">420</P>
+      <P Name="Dst">213#in:1</P>
+    </Branch>
+    <Branch>
+      <P Name="ZOrder">421</P>
+      <P Name="Points">[0, 115]</P>
+      <P Name="Dst">{SID_LOGX}#in:1</P>
+    </Branch>
   </Line>
   <Line>
     <P Name="ZOrder">416</P>
     <P Name="Src">213#out:1</P>
-    <P Name="Points">[45, 0; 0, -25; 45, 0]</P>
+    <P Name="Points">[45, 0]</P>
     <Branch>
-      <P Name="ZOrder">417</P>
-      <P Name="Points">[0, 80]</P>
-      <P Name="Dst">200#in:1</P>
+      <P Name="ZOrder">422</P>
+      <P Name="Points">[0, -25; 45, 0]</P>
+      <Branch>
+        <P Name="ZOrder">417</P>
+        <P Name="Points">[0, 80]</P>
+        <P Name="Dst">200#in:1</P>
+      </Branch>
+      <Branch>
+        <P Name="ZOrder">418</P>
+        <P Name="Dst">168#in:1</P>
+      </Branch>
     </Branch>
     <Branch>
-      <P Name="ZOrder">418</P>
-      <P Name="Dst">168#in:1</P>
+      <P Name="ZOrder">423</P>
+      <P Name="Points">[0, 115]</P>
+      <P Name="Dst">{SID_LOGU}#in:1</P>
     </Branch>
   </Line>
   <Line>
@@ -188,7 +224,8 @@ def verificar(archivos: dict[str, bytes]):
         assert ref[0] in sids, f"origen en bloque inexistente {ref}"
         assert ref not in usados_out, f"salida con dos líneas {ref}"
         usados_out[ref] = True
-    for requerido in [("213", "1"), ("168", "1"), ("200", "1"), (str(SID_ZOH), "1"), ("224", "1")]:
+    for requerido in [("213", "1"), ("168", "1"), ("200", "1"), (str(SID_ZOH), "1"), ("224", "1"),
+                      (str(SID_LOGX), "1"), (str(SID_LOGU), "1")]:
         assert requerido in usados_in, f"entrada sin conectar {requerido}"
     assert "K</P>" not in raiz
     return len(sids), len(usados_in)

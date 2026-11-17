@@ -238,51 +238,78 @@ Recomendaciones para la primera prueba:
 
 ## PARTE C — Swing-up: el péndulo se levanta solo (solo MATLAB)
 
-Una segunda red DQN (`models/dqn_swingup_qube.mat`) levanta el péndulo desde
-abajo y lo mantiene arriba. En la máquina del Qube solo hacen falta **dos
-archivos**, en la misma carpeta:
+Una red DQN levanta el péndulo desde abajo y lo mantiene arriba. En la máquina
+del Qube solo hacen falta **dos archivos**, en la misma carpeta:
 
-| Archivo | Qué es |
-|---|---|
-| `models/dqn_swingup_qube.mat` | la red entrenada (struct `red_swingup`) |
-| `simulink/qs3_dqn_swingup_ctrl.slx` | tu modelo de Quanser ya modificado |
+| Versión | Red | Modelo de Simulink | Estado |
+|---|---|---|---|
+| **v2 (actual)** | `models/dqn_swingup_v2_qube.mat` | `simulink/qs3_dqn_swingup_v2_ctrl.slx` | robusta; pendiente de probar en el Qube |
+| v1 | `models/dqn_swingup_qube.mat` | `simulink/qs3_dqn_swingup_ctrl.slx` | probada en el Qube: sube, pero tiembla |
 
 Pasos:
-1. Copia los dos archivos a una carpeta, p. ej. `C:\qube_dqn`.
+1. Copia los dos archivos de la misma versión a una carpeta, p. ej. `C:\qube_dqn`.
 2. En MATLAB: `cd('C:\qube_dqn')` (la red se lee de la carpeta actual al compilar).
 3. Qube conectado y encendido, péndulo **colgando y quieto**, brazo centrado,
-   sin nada alrededor (el brazo gira hasta ~±100°).
-4. Abre `qs3_dqn_swingup_ctrl.slx` → **QUARC → Monitor & Tune**. El motor
-   actúa en cuanto arranca: la red levanta el péndulo y lo mantiene arriba.
+   sin nada alrededor (el brazo gira hasta ~±115°).
+4. Abre el `.slx` → **QUARC → Monitor & Tune**. El motor actúa en cuanto
+   arranca: la red levanta el péndulo y lo mantiene arriba.
 5. **Stop** para detener. Si el brazo pasa de ±150°, el bloque corta el voltaje.
 
-Qué cambia en `qs3_dqn_swingup_ctrl.slx` respecto a tu modelo:
-* El bloque *MATLAB Function* (antes la condición |α| ≤ 15°) es ahora el
-  controlador DQN: recibe X y entrega el voltaje. Carga la red con
-  `coder.load('dqn_swingup_qube.mat')`.
-* Se quitan la ganancia `K`, el `Sum`, el switch de balance y la constante 0 V.
-* Se añade un *Zero-Order Hold* de 2 ms entre X y el controlador.
-* Las ganancias de tus observadores quedan como números (a = 100: L = 30000,
-  beta = 300, m = −8000000), así el modelo no necesita variables en el workspace.
-* La velocidad del péndulo la estima el propio bloque con tu mismo observador,
-  pero con α desenrollado: el observador del modelo da picos cuando α salta de
-  +180° a −180° al pasar por abajo.
+### Qué pasó con la v1 en el Qube real y qué cambia la v2
 
-El `.slx` se generó editando su XML con `python/crear_slx_swingup.py`, sin
-Simulink. Si no abre o no compila, usa
-`matlab/conectar_swingup_al_simulink_original.m`, que hace los mismos cambios
-desde MATLAB sobre tu modelo original.
+En el hardware la v1 subía tras varios intentos y, arriba, α oscilaba ±3–8° a
+~13 Hz. Simulando la v1 con distintos errores de modelo, ese síntoma solo
+aparece cuando la planta responde más rápido que el modelo:
 
-Resultados en el modelo no lineal (`matlab/prueba_swingup_modelo_no_lineal.m`):
+| Error de modelo simulado (red v1) | Temblor de α | Frecuencia |
+|---|---|---|
+| ninguno | 0.3° RMS | 1 Hz |
+| fricción seca del brazo | 0.8–1.1° RMS | 0.2–0.5 Hz |
+| inercia del brazo ÷4 | 1.5° RMS, picos 4.8° | 16.5 Hz |
+| retardo 6 ms + ganancia del motor ×1.5 | 1.8° RMS, picos 5° | 11 Hz |
+
+Es decir, el brazo real parece tener bastante menos inercia que `mr·r²/3`
+(masa concentrada cerca del eje). La v2 se entrenó cubriendo ese rango:
+
+* inercia del brazo ×0.2 a ×1.1, ganancia del motor ×0.8 a ×1.25, retardo de
+  0 a 8 ms, fricción seca y error de cero del encoder, aleatorios por episodio;
+* 15 voltajes (`±10, ±6, ±3.5, ±2, ±1, ±0.5, ±0.2, 0`) y castigo a los cambios
+  bruscos de voltaje (la red recibe también el voltaje anterior);
+* velocidades estimadas en el propio bloque con dos observadores (a = 100 y
+  a = 250) sobre α desenrollado; ya no usa las velocidades del modelo.
+
+Resultados de la v2 en simulación (`matlab/prueba_swingup_modelo_no_lineal.m`):
 
 | Prueba | Resultado |
 |---|---|
 | Bloque de Simulink vs Python (3000 pasos de 2 ms) | 0 voltajes distintos |
-| Validación en Python, 1000 casos, parámetros ±15 % | 99.7 % de éxito, subida media 0.83 s |
-| Monte Carlo en MATLAB, 40 casos, parámetros ±15 % | 100 %, subida media 0.90 s (máx. 1.76 s) |
-| Caso nominal | sube en 0.55 s, brazo hasta 77° |
+| 1000 casos con Qube aleatorio (Python) | 99.3 % de éxito, subida media 0.80 s (máx. 2.1 s), temblor 0.28° RMS |
+| Brazo ligero (inercia ÷4) + 4 ms | 100 %, temblor 0.35° RMS (la v1: 1.5° RMS) |
+| Ganancia ×3, inercia ÷10, retardo 16 ms | se mantiene arriba en todos; temblor 0.3–0.8° RMS |
+| Monte Carlo en MATLAB, 40 casos | 100 %, subida media 0.81 s, temblor medio 0.27° RMS |
 
 ![swing-up](models/figuras/swingup_dqn.png)
+
+### Registro de datos para calibrar el modelo
+
+`qs3_dqn_swingup_v2_ctrl.slx` incluye dos bloques *To Workspace* (`datos_x`,
+`datos_u`) que guardan a 2 ms la señal X y el voltaje. Después de una corrida:
+
+```matlab
+save('datos_qube.mat', 'datos_x', 'datos_u')
+```
+
+Con ese archivo se puede identificar la inercia y el retardo reales y
+reentrenar la red centrada en ellos.
+
+### Cómo se generó el `.slx`
+
+`python/crear_slx_swingup.py` edita el XML del modelo original (sin Simulink):
+el bloque *MATLAB Function* pasa a ser el controlador (carga la red con
+`coder.load`), se quitan `K`, `Sum`, el switch de balance y la constante 0 V,
+se añade un *Zero-Order Hold* de 2 ms y las ganancias de tus observadores
+quedan como números. Alternativa desde MATLAB sobre tu modelo original:
+`matlab/conectar_swingup_al_simulink_original.m`.
 
 Reentrenar: `python train_dqn_swingup.py` y luego `python crear_slx_swingup.py`.
 

@@ -1,26 +1,28 @@
 function u = dqn_swingup_block(x, red_swingup)
 %DQN_SWINGUP_BLOCK Red DQN que LEVANTA el pendulo (swing-up) y lo MANTIENE
-%   arriba. Control inverso: estado medido -> voltaje del motor.
+%   arriba. Control inverso: estado medido -> voltaje del motor.  (version 2)
 %
-%   x          : 4x1 = senal X de "Qube With Pendulum"
-%                [theta; alpha; theta_dot; alpha_dot], con alpha envuelto a
-%                (-pi, pi]: 0 = arriba, +-pi = colgando. Solo se usan x(1:3):
-%                la velocidad del pendulo se estima AQUI con el mismo
-%                observador de 3er orden del modelo, pero con alpha
-%                DESENROLLADO (el observador del modelo da picos cuando
-%                alpha salta de +180 a -180 grados al pasar por abajo).
-%   red_swingup: struct guardado en dqn_swingup_qube.mat
+%   x          : senal X de "Qube With Pendulum". Solo se usan los angulos de
+%                los encoders: x(1) = theta, x(2) = alpha envuelto a (-pi, pi]
+%                (0 = arriba, +-pi = colgando).
+%   red_swingup: struct guardado en el .mat de la red
 %   u          : voltaje del motor (V)
 %
+%   Las velocidades se estiman AQUI con el observador de 3er orden del
+%   proyecto, en dos versiones (lenta a = 100 y rapida a = 250), usando alpha
+%   DESENROLLADO (sin el salto de +180 a -180 grados al pasar por abajo).
+%   La red recibe ademas el voltaje anterior para poder suavizar la accion.
+%
 %   Debe ejecutarse cada red_swingup.Ts = 2 ms (ZOH a la entrada). La red
-%   decide cada n_hold pasos (10 ms) y mantiene el voltaje entre decisiones.
+%   decide cada n_hold pasos y mantiene el voltaje entre decisiones.
 %   Seguridad: si |theta| > theta_max el voltaje queda en 0 hasta reiniciar.
 %#codegen
 persistent a_prev a_unw p_o v_o z_o cnt u_hold apagado
-theta = x(1);  alpha = x(2);  theta_d = x(3);
+theta = x(1);  alpha = x(2);
 if isempty(a_prev)
     a_prev = alpha;  a_unw = alpha;
-    p_o = alpha;  v_o = 0;  z_o = 0;
+    p_o = [theta theta; alpha alpha];     % filas: theta, alpha; columnas: lento, rapido
+    v_o = zeros(2, 2);  z_o = zeros(2, 2);
     cnt = 0;  u_hold = 0;  apagado = false;
 end
 
@@ -30,17 +32,21 @@ d = d - 2*pi*round(d/(2*pi));
 a_unw  = a_unw + d;
 a_prev = alpha;
 
-% --- observador de velocidad del pendulo (Euler a Ts, como ode1)
-alpha_d = v_o;
-e   = a_unw - p_o;
+% --- observadores de velocidad (Euler a Ts, como ode1)
+Lg = [1; 1]*red_swingup.obs_L(:)';
+mg = [1; 1]*red_swingup.obs_m(:)';
+bg = [1; 1]*red_swingup.obs_beta(:)';
+vel = v_o;
+e   = [theta theta; a_unw a_unw] - p_o;
 p_n = p_o + red_swingup.Ts*v_o;
-v_n = v_o + red_swingup.Ts*(red_swingup.L*e + red_swingup.m*z_o);
-z_n = z_o + red_swingup.Ts*(e - red_swingup.beta*z_o);
+v_n = v_o + red_swingup.Ts*(Lg.*e + mg.*z_o);
+z_n = z_o + red_swingup.Ts*(e - bg.*z_o);
 p_o = p_n;  v_o = v_n;  z_o = z_n;
 
 % --- red neuronal: decide cada n_hold pasos
 if cnt == 0
-    obs = [theta; sin(alpha); cos(alpha); theta_d; alpha_d]./red_swingup.x_scale(:);
+    obs = [theta; sin(alpha); cos(alpha); vel(1,1); vel(2,1); vel(1,2); vel(2,2); u_hold] ...
+          ./red_swingup.x_scale(:);
     h1 = max(red_swingup.W1*obs + red_swingup.b1(:), 0);
     h2 = max(red_swingup.W2*h1  + red_swingup.b2(:), 0);
     q  = red_swingup.W3*h2 + red_swingup.b3(:);

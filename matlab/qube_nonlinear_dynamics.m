@@ -30,6 +30,9 @@ m12 = -mlr.*c;
 m22 = Jp;
 
 c1 = tau - p.br.*th_d - 2*Jp.*s.*c.*th_d.*al_d - mlr.*s.*al_d.^2;
+if isfield(p, 'tau_c')                       % fricción seca del brazo (opcional)
+    c1 = c1 - p.tau_c.*tanh(th_d/0.1);
+end
 c2 = -p.bp.*al_d + Jp.*s.*c.*th_d.^2 + p.mp.*p.g.*l.*s;
 
 det_m = m11.*m22 - m12.^2;
