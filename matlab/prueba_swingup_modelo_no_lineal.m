@@ -46,7 +46,9 @@ title('Swing-up + balance con la red DQN (0° = arriba, \pm180° = colgando)');
 subplot(3,1,2); plot(s.t, s.X(1,:)/d2r, 'b'); ylabel('\theta (deg)'); grid on;
 subplot(3,1,3); stairs(s.t(1:end-1), s.U, 'b'); ylabel('V_m (V)'); xlabel('t (s)'); grid on;
 try
-    print(fig, fullfile(fileparts(mat_), 'swingup_dqn.png'), '-dpng', '-r110');
+    dir_fig_ = fullfile(fileparts(mat_), 'figuras');
+    if ~exist(dir_fig_, 'dir'), dir_fig_ = fileparts(mat_); end
+    print(fig, fullfile(dir_fig_, 'swingup_dqn.png'), '-dpng', '-r110');
 catch
 end
 

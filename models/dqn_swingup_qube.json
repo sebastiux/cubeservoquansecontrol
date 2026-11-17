@@ -1,0 +1,42 @@
+{
+  "acciones": [
+    -10.0,
+    -6.0,
+    -3.0,
+    -1.5,
+    -0.5,
+    0.0,
+    0.5,
+    1.5,
+    3.0,
+    6.0,
+    10.0
+  ],
+  "Ts_agente": 0.01,
+  "exito_val": 0.996999979019165,
+  "t_subida": 0.8265495896339417,
+  "theta_max_deg": 119.67761841047962,
+  "args": {
+    "seed": 0,
+    "n_envs": 32,
+    "pasos": 150000,
+    "updates": 2,
+    "batch": 256,
+    "gamma": 0.995,
+    "nstep": 10,
+    "lr": 0.0003,
+    "target_cada": 1000,
+    "buffer": 1000000,
+    "warmup": 20000,
+    "eps_pasos": 30000,
+    "eps_final": 0.05,
+    "ts_agente": 0.01,
+    "theta_lim": 120.0,
+    "hidden": [
+      256,
+      256
+    ],
+    "eval_cada": 5000,
+    "out": "../models/dqn_swingup_qube"
+  }
+}

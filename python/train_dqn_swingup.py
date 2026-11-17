@@ -150,6 +150,26 @@ def exportar(q, acciones, env, path, theta_max_deg, extra):
     sio.savemat(str(path), d, oned_as="column")
 
 
+def exportar_desde_pt(pt, out):
+    """Valida y exporta a .mat un checkpoint guardado durante el entrenamiento."""
+    ck = torch.load(pt, weights_only=False)
+    a = ck["meta"]["args"] if "meta" in ck else ck["args"]
+    q = QNetSU(len(ACCIONES), tuple(a["hidden"]))
+    q.load_state_dict(ck["state_dict"])
+    env = QubeSwingUpEnv(1, ACCIONES, Ts_agente=a["ts_agente"], theta_lim_deg=a["theta_lim"])
+    exito, t_sub, th_max = evaluar(lambda y: q(y).argmax(1), ACCIONES, a["ts_agente"],
+                                   n=1000, seed=999, theta_lim_deg=a["theta_lim"])
+    meta = {"acciones": ACCIONES, "Ts_agente": env.Ts_agente, "exito_val": exito,
+            "t_subida": t_sub, "theta_max_deg": th_max, "args": a}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"state_dict": q.state_dict(), "meta": meta}, out.with_suffix(".pt"))
+    exportar(q, ACCIONES, env, out.with_suffix(".mat"), theta_max_deg=a["theta_lim"] + 30,
+             extra={"exito_val": exito})
+    out.with_suffix(".json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    print(f"Validación (1000 casos): éxito={100 * exito:.1f}%  t_subida={t_sub:.2f}s  "
+          f"theta_max={th_max:.0f}°  ->  {out.with_suffix('.mat')}")
+
+
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
@@ -171,7 +191,10 @@ def main():
     ap.add_argument("--hidden", type=int, nargs="+", default=[256, 256])
     ap.add_argument("--eval-cada", type=int, default=5_000)
     ap.add_argument("--out", default=str(ROOT / "models" / "dqn_swingup_qube"))
+    ap.add_argument("--exportar-pt", default="", help="solo exporta este .pt a --out (.mat)")
     args = ap.parse_args()
+    if args.exportar_pt:
+        return exportar_desde_pt(args.exportar_pt, Path(args.out))
 
     torch.manual_seed(args.seed)
     gen = torch.Generator().manual_seed(args.seed)
@@ -255,7 +278,7 @@ def main():
     meta = {"acciones": acciones, "Ts_agente": env.Ts_agente, "exito_val": exito,
             "t_subida": t_sub, "theta_max_deg": th_max, "args": vars(args)}
     torch.save({"state_dict": q.state_dict(), "meta": meta}, out.with_suffix(".pt"))
-    exportar(q, acciones, env, out.with_suffix(".mat"), theta_max_deg=150.0,
+    exportar(q, acciones, env, out.with_suffix(".mat"), theta_max_deg=args.theta_lim + 30,
              extra={"exito_val": exito})
     out.with_suffix(".json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
     print(f"\nValidación final (1000 casos): éxito={100 * exito:.1f}%  t_subida={t_sub:.2f}s  "

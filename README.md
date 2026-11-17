@@ -236,6 +236,58 @@ Recomendaciones para la primera prueba:
 
 ---
 
+## PARTE C — Swing-up: el péndulo se levanta solo (solo MATLAB)
+
+Una segunda red DQN (`models/dqn_swingup_qube.mat`) levanta el péndulo desde
+abajo y lo mantiene arriba. En la máquina del Qube solo hacen falta **dos
+archivos**, en la misma carpeta:
+
+| Archivo | Qué es |
+|---|---|
+| `models/dqn_swingup_qube.mat` | la red entrenada (struct `red_swingup`) |
+| `simulink/qs3_dqn_swingup_ctrl.slx` | tu modelo de Quanser ya modificado |
+
+Pasos:
+1. Copia los dos archivos a una carpeta, p. ej. `C:\qube_dqn`.
+2. En MATLAB: `cd('C:\qube_dqn')` (la red se lee de la carpeta actual al compilar).
+3. Qube conectado y encendido, péndulo **colgando y quieto**, brazo centrado,
+   sin nada alrededor (el brazo gira hasta ~±100°).
+4. Abre `qs3_dqn_swingup_ctrl.slx` → **QUARC → Monitor & Tune**. El motor
+   actúa en cuanto arranca: la red levanta el péndulo y lo mantiene arriba.
+5. **Stop** para detener. Si el brazo pasa de ±150°, el bloque corta el voltaje.
+
+Qué cambia en `qs3_dqn_swingup_ctrl.slx` respecto a tu modelo:
+* El bloque *MATLAB Function* (antes la condición |α| ≤ 15°) es ahora el
+  controlador DQN: recibe X y entrega el voltaje. Carga la red con
+  `coder.load('dqn_swingup_qube.mat')`.
+* Se quitan la ganancia `K`, el `Sum`, el switch de balance y la constante 0 V.
+* Se añade un *Zero-Order Hold* de 2 ms entre X y el controlador.
+* Las ganancias de tus observadores quedan como números (a = 100: L = 30000,
+  beta = 300, m = −8000000), así el modelo no necesita variables en el workspace.
+* La velocidad del péndulo la estima el propio bloque con tu mismo observador,
+  pero con α desenrollado: el observador del modelo da picos cuando α salta de
+  +180° a −180° al pasar por abajo.
+
+El `.slx` se generó editando su XML con `python/crear_slx_swingup.py`, sin
+Simulink. Si no abre o no compila, usa
+`matlab/conectar_swingup_al_simulink_original.m`, que hace los mismos cambios
+desde MATLAB sobre tu modelo original.
+
+Resultados en el modelo no lineal (`matlab/prueba_swingup_modelo_no_lineal.m`):
+
+| Prueba | Resultado |
+|---|---|
+| Bloque de Simulink vs Python (3000 pasos de 2 ms) | 0 voltajes distintos |
+| Validación en Python, 1000 casos, parámetros ±15 % | 99.7 % de éxito, subida media 0.83 s |
+| Monte Carlo en MATLAB, 40 casos, parámetros ±15 % | 100 %, subida media 0.90 s (máx. 1.76 s) |
+| Caso nominal | sube en 0.55 s, brazo hasta 77° |
+
+![swing-up](models/figuras/swingup_dqn.png)
+
+Reentrenar: `python train_dqn_swingup.py` y luego `python crear_slx_swingup.py`.
+
+---
+
 ## Errores comunes
 
 **`No encuentro los archivos del proyecto` / `Unrecognized function or variable 'cargar_red_dqn'`**
