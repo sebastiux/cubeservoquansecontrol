@@ -8,7 +8,7 @@ function instalar_en_carpeta(destino)
 %   Ejecútalo UNA vez desde la carpeta matlab/ del proyecto descargado.
 %   Copia a "destino":
 %     - todos los .m de matlab/ (scripts, bloques y auxiliares)
-%     - models/dqn_qube.mat                    (la red entrenada)
+%     - models/*.mat   (redes entrenadas: dqn_qube.mat, dqn_swingup_qube.mat)
 %     - simulink/qs3_lqr_ctrl_simulinkFInal.slx (tu modelo original de Quanser)
 %   Después ya puedes ejecutar todo directamente desde esa carpeta:
 %     prueba_dqn_modelo_no_lineal
@@ -27,7 +27,10 @@ lista = dir(fullfile(origen, '*.m'));
 for k = 1:numel(lista)
     archivos{end+1} = fullfile(origen, lista(k).name); %#ok<AGROW>
 end
-archivos{end+1} = fullfile(raiz, 'models', 'dqn_qube.mat');
+lista = dir(fullfile(raiz, 'models', '*.mat'));           % redes entrenadas
+for k = 1:numel(lista)
+    archivos{end+1} = fullfile(raiz, 'models', lista(k).name); %#ok<AGROW>
+end
 archivos{end+1} = fullfile(raiz, 'simulink', 'qs3_lqr_ctrl_simulinkFInal.slx');
 
 fprintf('Copiando a %s\n', destino);
@@ -44,6 +47,7 @@ for k = 1:numel(archivos)
 end
 addpath(destino);
 fprintf(['\nListo. Ahora puedes ejecutar desde %s:\n' ...
-         '   prueba_dqn_modelo_no_lineal\n   construir_entorno_pruebas\n' ...
-         '   conectar_al_simulink_original\n'], destino);
+         '   prueba_swingup_modelo_no_lineal          (swing-up, solo MATLAB)\n' ...
+         '   conectar_swingup_al_simulink_original    (swing-up en el Qube real)\n' ...
+         '   prueba_dqn_modelo_no_lineal, construir_entorno_pruebas, conectar_al_simulink_original (solo balance)\n'], destino);
 end
