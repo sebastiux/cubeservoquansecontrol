@@ -315,6 +315,39 @@ Reentrenar: `python train_dqn_swingup.py` y luego `python crear_slx_swingup.py`.
 
 ---
 
+## Modelo no lineal oficial de Quanser (referencia)
+
+Fuente: repositorio `quanser/Quanser_Academic_Resources`, rama `dev-windows`
+(consultado en el commit `6adbcef`, 2026-10-27):
+
+* `4_concept_reviews/Modeling/007_pendulum_state_space_model.pdf`, ecs. 1.1–1.3
+  (péndulo colgando, α = 0 abajo):
+  ```
+  (Jr + Jp·sin²α)·θ̈ + mp·l·r·cosα·α̈ + 2·Jp·sinα·cosα·θ̇·α̇ − mp·l·r·sinα·α̇² = τ − br·θ̇
+  Jp·α̈ + mp·l·r·cosα·θ̈ − Jp·sinα·cosα·θ̇² + mp·g·l·sinα = −bp·α̇
+  τ = km·(vm − km·θ̇)/Rm        Jr = mr·r²/3,  Jp = mp·Lp²/3
+  ```
+* `6_teaching/1_Controls/Qube_Servo_3/supplementary_material/Pendulum Equations.pdf`
+  (K. J. Åström), ec. 8: las mismas ecuaciones para el péndulo invertido.
+* `.../sp6_pendulum_control/*/qube3_rotpen_param.m`: los parámetros oficiales,
+  iguales a los de `ProyectoControlFinal.m`.
+
+Comparación con el modelo de este proyecto (`python/qube_model.py`): cambiando
+α por α + π las ecuaciones coinciden término a término, salvo la inercia del
+brazo. El modelo oficial usa `Jr`; el de este proyecto usa `Jr + mp·r²`
+(como el modelo lineal de `ProyectoControlFinal.m`).
+
+| | Inercia del brazo | Aceleración por voltio (linealizado arriba) |
+|---|---|---|
+| Oficial de Quanser | 2.29e-4 kg·m² | 57 rad/s² por V |
+| Este proyecto | 4.02e-4 kg·m² | 21 rad/s² por V |
+
+El caso "brazo ligero" con el que se validó la v2 (2.31e-4 kg·m²) es
+prácticamente el modelo oficial, y la v2 se entrenó cubriendo de 2.19e-4 a
+4.25e-4 kg·m².
+
+---
+
 ## Errores comunes
 
 **`No encuentro los archivos del proyecto` / `Unrecognized function or variable 'cargar_red_dqn'`**
