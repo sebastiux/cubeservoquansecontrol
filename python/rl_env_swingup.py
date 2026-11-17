@@ -1,28 +1,32 @@
 """
-Entorno RL (vectorizado) del Qube-Servo 3 NO LINEAL para SWING-UP + BALANCE:
-el péndulo empieza colgando y la red debe levantarlo y mantenerlo arriba.
+Entorno RL (vectorizado) del Qube-Servo 3 para SWING-UP + BALANCE (versión 3).
 
-Versión 2 (robusta para el Qube real). Además del modelo no lineal y los
-encoders cuantizados, cada episodio aleatoriza lo que el modelo ideal no tiene
-y que en el hardware producía temblor y varios intentos de subida:
-  * inercia del brazo entre 0.2 y 1.1 veces mr*r^2/3. En el Qube real el
-    temblor (alpha +-3..8° a 13 Hz) solo se reproduce si el brazo tiene bastante
-    menos inercia que la del modelo (masa concentrada cerca del eje),
-  * ganancia voltaje->par del motor (x0.8 a x1.25) y parámetros ±15 %,
-  * retardo de actuación de 0 a 4 muestras (0 a 8 ms),
-  * fricción seca del brazo (0 a 3 mN·m) y amortiguamientos (x0.5 a x3),
+Planta: MODELO NO LINEAL OFICIAL de Quanser (qube_model_oficial.py), integrado
+con RK4 a 2 ms. No se usa ningún modelo linealizado.
+
+Lazo completo, igual que en el Simulink del Qube:
+
+  red DQN -> voltaje ordenado -> FILTRO PASA BAJAS de 2.º orden
+          (w = 150 rad/s, zeta = 1, Euler a 2 ms como ode1) -> motor
+  encoders (2048 cuentas/rev) -> observadores de velocidad -> red DQN
+
+El filtro va DENTRO del entrenamiento: la red ve su estado y aprende a
+compensar su retraso (~10 ms).
+
+Cada episodio usa un Qube distinto (lo que el modelo ideal no garantiza):
+  * inercia del brazo x0.7 a x1.9 de la oficial (mr*r^2/3), resto ±15 %
+    (x1.76 equivale a sumar mp*r^2, como en el modelo anterior del proyecto),
+  * ganancia voltaje->par x0.8 a x1.25, retardo extra de 0 a 3 muestras,
+  * fricción seca del brazo (0 a 3 mN·m), amortiguamientos x0.5 a x3,
   * error de cero del encoder del péndulo (±1°).
 
-Observación (8 entradas), calculada igual que en dqn_swingup_block.m:
+Observación (10 entradas), calculada igual que en dqn_swingup_block.m:
     [theta, sin(alpha), cos(alpha),
-     theta_dot, alpha_dot       (observador lento, a = 100, poco ruido)
-     theta_dot, alpha_dot       (observador rápido, a = 250, poco retraso)
-     u_anterior]
-Los observadores son los de 3er orden del proyecto, con alpha DESENROLLADO e
-integrados con Euler a 2 ms. u_anterior permite a la red suavizar el voltaje.
+     theta_dot, alpha_dot      (observador lento, a = 100)
+     theta_dot, alpha_dot      (observador rápido, a = 250)
+     voltaje ordenado anterior, voltaje filtrado, derivada del filtrado]
 
-Recompensa: subir + bono al mantenerse arriba y quieto, con castigo a los
-cambios bruscos de voltaje. El episodio termina si el brazo pasa de theta_lim.
+Acciones: voltajes (modo absoluto) o incrementos de voltaje (modo incremental).
 """
 
 from __future__ import annotations
@@ -32,17 +36,17 @@ import math
 import numpy as np
 import torch
 
-from qube_model import BatchParams, QubeParams, rk4_step
+from qube_model_oficial import LoteParametros, ParametrosQube, paso_rk4
 
 DEG = math.pi / 180
 
 A_OBS = (100.0, 250.0)                      # polos de los observadores (lento, rápido)
-# Normalización de la observación
-X_SCALE_SU = np.array([1.0, 1.0, 1.0, 5.0, 10.0, 5.0, 10.0, 10.0])
+FILTRO_W, FILTRO_ZETA = 150.0, 1.0          # pasa bajas óptimo (ver analisis_filtro.py)
+X_SCALE_SU = np.array([1.0, 1.0, 1.0, 5.0, 10.0, 5.0, 10.0, 10.0, 10.0, 2000.0])
 # Para reflejar un estado (x -> -x, u -> -u); cos(alpha) no cambia
-ESPEJO = np.array([-1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0])
+ESPEJO = np.array([-1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0])
 N_OBS = len(X_SCALE_SU)
-MAX_RETARDO = 4                             # muestras de 2 ms
+MAX_RETARDO = 3                             # muestras de 2 ms
 
 
 def envolver(a):
@@ -51,13 +55,15 @@ def envolver(a):
 
 
 class QubeSwingUpEnv:
-    def __init__(self, n_envs: int, acciones, Ts_agente: float = 0.006,
-                 params: QubeParams | None = None, aleatorio: bool = True,
-                 theta_lim_deg: float = 120.0, t_max: float = 6.0,
-                 p_abajo: float = 0.7, seed: int = 0, r_terminal: float = -20.0):
-        self.p = params or QubeParams()
+    def __init__(self, n_envs: int, acciones, incremental: bool = False,
+                 Ts_agente: float = 0.01, params: ParametrosQube | None = None,
+                 aleatorio: bool = True, theta_lim_deg: float = 120.0, t_max: float = 6.0,
+                 p_abajo: float = 0.7, seed: int = 0, r_terminal: float = -20.0,
+                 filtro_w: float = FILTRO_W, filtro_zeta: float = FILTRO_ZETA):
+        self.p = params or ParametrosQube()
         self.n = n_envs
         self.acciones = torch.as_tensor(np.asarray(acciones, dtype=np.float32))
+        self.incremental = incremental
         self.dt = self.p.Ts
         self.substeps = max(1, int(round(Ts_agente / self.dt)))
         self.Ts_agente = self.substeps * self.dt
@@ -67,6 +73,8 @@ class QubeSwingUpEnv:
         self.p_abajo = p_abajo
         self.r_terminal = r_terminal
         self.gen = torch.Generator().manual_seed(seed)
+        self.filtro_w, self.filtro_zeta = filtro_w, filtro_zeta      # w <= 0: sin filtro
+        self.registro = None        # lista para registrar (voltaje al motor, estado) cada 2 ms
         self.q_enc = 2 * math.pi / self.p.enc_counts
         a = torch.tensor(A_OBS)
         self.obs_beta = 3 * a                        # (2,)
@@ -80,14 +88,15 @@ class QubeSwingUpEnv:
         self.p_o = torch.zeros(n, 2, 2)
         self.v_o = torch.zeros(n, 2, 2)
         self.z_o = torch.zeros(n, 2, 2)
-        self.u_prev = torch.zeros(n)                 # última acción ordenada
+        self.u_cmd = torch.zeros(n)                  # voltaje ordenado por la red
+        self.f1 = torch.zeros(n)                     # filtro: voltaje filtrado
+        self.f2 = torch.zeros(n)                     # filtro: su derivada
         self.u_fifo = torch.zeros(n, MAX_RETARDO + 1)
         self.retardo = torch.zeros(n, dtype=torch.long)
         self.k_u = torch.ones(n)                     # ganancia de voltaje
         self.offset = torch.zeros(n)                 # error de cero de alpha
         self.t = torch.zeros(n, dtype=torch.long)
-        self.bp = BatchParams(self.p, n, 0.0)
-        self.bp.tau_c = torch.zeros(n)
+        self.bp = LoteParametros(self.p, n)
         self.reset(torch.ones(n, dtype=torch.bool))
 
     # ------------------------------------------------------------------
@@ -119,19 +128,18 @@ class QubeSwingUpEnv:
             x0 = self.estados_iniciales(k)
         self.x[mask] = x0
         self.t[mask] = 0
-        # ---- aleatorización del "Qube" de este episodio
-        nb = BatchParams(self.p, k, 0.15 if self.aleatorio else 0.0, generator=self.gen)
+        # ---- el "Qube" de este episodio
+        b = self.p
         if self.aleatorio:
-            nb.mr = self.p.mr * self._u(k, 0.2, 1.1)        # inercia del brazo
-            nb.Jr = nb.mr * nb.r ** 2 / 3
-            nb.br = self.p.br * self._u(k, 0.5, 3.0)
-            nb.bp = self.p.bp * self._u(k, 0.5, 3.0)
+            for nombre in ("Rm", "km", "r", "mp", "Lp"):
+                getattr(self.bp, nombre)[mask] = getattr(b, nombre) * self._u(k, 0.85, 1.15)
+            self.bp.mr[mask] = b.mr * self._u(k, 0.7, 1.9)          # inercia del brazo
+            self.bp.br[mask] = b.br * self._u(k, 0.5, 3.0)
+            self.bp.bp[mask] = b.bp * self._u(k, 0.5, 3.0)
             self.bp.tau_c[mask] = self._u(k, 0.0, 3e-3)
             self.k_u[mask] = self._u(k, 0.8, 1.25)
             self.retardo[mask] = torch.randint(0, MAX_RETARDO + 1, (k,), generator=self.gen)
             self.offset[mask] = self._u(k, -1.0, 1.0) * DEG
-        for name in ("Rm", "km", "mr", "r", "br", "mp", "Lp", "bp", "g", "l", "Jr", "Jp"):
-            getattr(self.bp, name)[mask] = getattr(nb, name)
         y0 = self._medir(x0, self.offset[mask])
         self.y[mask] = y0
         v0 = x0[:, 2:4, None].expand(k, 2, 2)
@@ -139,7 +147,9 @@ class QubeSwingUpEnv:
         self.p_o[mask] = y0[:, :, None].expand(k, 2, 2)      # observadores convergidos
         self.v_o[mask] = v0
         self.z_o[mask] = 0.0
-        self.u_prev[mask] = 0.0
+        self.u_cmd[mask] = 0.0
+        self.f1[mask] = 0.0
+        self.f2[mask] = 0.0
         self.u_fifo[mask] = 0.0
         return self.observe()
 
@@ -158,30 +168,47 @@ class QubeSwingUpEnv:
         al = self.y[:, 1]
         return torch.stack([self.y[:, 0], torch.sin(al), torch.cos(al),
                             self.vel[:, 0, 0], self.vel[:, 1, 0],
-                            self.vel[:, 0, 1], self.vel[:, 1, 1], self.u_prev], dim=1)
+                            self.vel[:, 0, 1], self.vel[:, 1, 1],
+                            self.u_cmd, self.f1, self.f2], dim=1)
 
     # ------------------------------------------------------------------
     def recompensa(self, x, u, du):
+        """u: voltaje ordenado, du: su cambio en esta decisión."""
         th, th_d, al_d = x[:, 0], x[:, 2], x[:, 3]
         aw = envolver(x[:, 1])
         subir = 0.5 * (1 - aw.abs() / math.pi)                       # 0 abajo .. 0.5 arriba
         cerca = (aw.abs() < 0.3).float()
         bono = cerca * torch.clamp(1 - 20 * aw ** 2 - 0.05 * al_d ** 2 - 0.05 * th_d ** 2
-                                   - 0.01 * u ** 2 - 0.03 * du ** 2, min=0.0)
+                                   - 0.02 * u ** 2 - 0.10 * du ** 2, min=0.0)
         suave = torch.clamp(0.002 * du ** 2, max=0.1)
         return (subir + bono - 0.2 * th ** 2 - 0.0005 * u ** 2 - suave) / 1.5
 
     def step(self, a_idx: torch.Tensor):
-        u = self.acciones[a_idx]
-        du = u - self.u_prev
+        vmax = self.p.Vmax
+        if self.incremental:
+            u = torch.clamp(self.u_cmd + self.acciones[a_idx], -vmax, vmax)
+        else:
+            u = self.acciones[a_idx]
+        du = u - self.u_cmd
         filas = torch.arange(self.n)
+        w, z = self.filtro_w, self.filtro_zeta
         for _ in range(self.substeps):
+            if w <= 0:                              # sin filtro: sale lo que ordena la red
+                self.f1, self.f2 = u.clone(), torch.zeros_like(u)
+            # voltaje que sale del filtro en este paso (estado, como un integrador)
             self.u_fifo = torch.roll(self.u_fifo, 1, dims=1)
-            self.u_fifo[:, 0] = u
+            self.u_fifo[:, 0] = self.f1
             u_real = self.k_u * self.u_fifo[filas, self.retardo]
-            self.x = rk4_step(self.x, u_real, self.bp, self.dt)
+            if self.registro is not None:
+                self.registro.append((u_real.clone(), self.x.clone()))
+            self.x = paso_rk4(self.x, u_real, self.bp, self.dt)
+            if w > 0:
+                # filtro de 2.º orden, Euler a 2 ms (igual que ode1 en Simulink)
+                f1n = self.f1 + self.dt * self.f2
+                f2n = self.f2 + self.dt * (w * w * (u - self.f1) - 2 * z * w * self.f2)
+                self.f1, self.f2 = f1n, f2n
             self._update_sensor()
-        self.u_prev = u.clone()
+        self.u_cmd = u.clone()
         self.t += 1
 
         terminated = (self.x[:, 0].abs() > self.theta_lim) | ~torch.isfinite(self.x).all(dim=1)

@@ -1,19 +1,23 @@
 """
-Deep Q-Learning para SWING-UP + BALANCE del péndulo del Qube-Servo 3 sobre el
-MODELO NO LINEAL (rl_env_swingup.QubeSwingUpEnv): la red levanta el péndulo
-desde abajo y lo mantiene arriba.
+Deep Q-Learning para SWING-UP + BALANCE del péndulo del Qube-Servo 3 (versión 3).
 
-Misma variante estable de DQN que train_dqn.py (Double DQN, n-step, red
-objetivo con copia dura, targets acotados, Huber) más:
-  * simetría del péndulo como aumento de datos (estado y acción reflejados),
-  * red 5 -> 256 -> 256 -> 11 (entradas: theta, sin a, cos a, theta_dot, alpha_dot).
+Planta: modelo NO LINEAL OFICIAL de Quanser (qube_model_oficial.py) con el
+filtro pasa bajas de la salida dentro del lazo (rl_env_swingup.py). No se usa
+ningún modelo linealizado.
+
+DQN estable: Double DQN, retornos n-step, red objetivo con copia dura, targets
+acotados, Huber, y la simetría del péndulo como aumento de datos.
+Red: 10 entradas -> 256 -> 256 -> una salida por acción.
+
+Dos modos de acción:
+  absoluto     la red elige el voltaje (15 niveles)
+  incremental  la red elige cuánto sube o baja el voltaje (--incremental)
 
 Uso:
-    python train_dqn_swingup.py
+    python train_dqn_swingup.py [--incremental]
 Salida:
-    ../models/dqn_swingup_v2_qube.mat   contiene el struct `red_swingup` listo para
-                                     el bloque de Simulink (solo hace falta MATLAB)
-    ../models/dqn_swingup_v2_qube.pt
+    ../models/dqn_swingup_v3_qube.mat   struct `red_swingup` listo para el bloque
+                                        de Simulink (solo hace falta MATLAB)
 """
 
 from __future__ import annotations
@@ -31,12 +35,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from rl_env_swingup import A_OBS, DEG, ESPEJO, N_OBS, X_SCALE_SU, QubeSwingUpEnv, envolver
-from train_dqn import NStep
+from qube_model_oficial import paso_rk4, prueba_energia
+from rl_env_swingup import (A_OBS, DEG, ESPEJO, FILTRO_W, FILTRO_ZETA, N_OBS, X_SCALE_SU,
+                            QubeSwingUpEnv, envolver)
 
 ROOT = Path(__file__).resolve().parent.parent
-ACCIONES = [-10.0, -6.0, -3.5, -2.0, -1.0, -0.5, -0.2, 0.0, 0.2, 0.5, 1.0, 2.0, 3.5, 6.0, 10.0]
-NOMBRE = "dqn_swingup_v2_qube"
+NOMBRE = "dqn_swingup_v3_qube"
+ACCIONES_ABS = [-10.0, -6.0, -3.5, -2.0, -1.0, -0.5, -0.2, 0.0, 0.2, 0.5, 1.0, 2.0, 3.5, 6.0, 10.0]
+ACCIONES_INC = [-4.0, -1.5, -0.5, -0.15, -0.05, 0.0, 0.05, 0.15, 0.5, 1.5, 4.0]
+
+
+def lista_acciones(incremental):
+    return ACCIONES_INC if incremental else ACCIONES_ABS
 
 
 class QNetSU(nn.Module):
@@ -77,30 +87,64 @@ class Replay:
         return self.o[idx], self.a[idx], self.g[idx], self.o2[idx], self.d[idx], self.disc[idx]
 
 
+class NStep:
+    """Ventana deslizante (n, N_envs) que arma transiciones n-step."""
+
+    def __init__(self, n, n_envs, gamma):
+        self.n, self.gamma = n, gamma
+        self.o, self.a, self.r = [], [], []
+        self.term, self.done, self.of = [], [], []
+
+    def push(self, o, a, r, term, done, of):
+        for lst, v in ((self.o, o), (self.a, a), (self.r, r), (self.term, term),
+                       (self.done, done), (self.of, of)):
+            lst.append(v)
+        if len(self.o) < self.n:
+            return None
+        R = torch.stack(self.r)                 # (n, N)
+        D = torch.stack(self.done)
+        T = torch.stack(self.term)
+        OF = torch.stack(self.of)               # (n, N, dim)
+        vivo = torch.ones_like(R)               # vivo_k = sin fin de episodio antes del paso k
+        vivo[1:] = torch.cumprod(1 - D[:-1].float(), 0)
+        pot = self.gamma ** torch.arange(self.n, dtype=R.dtype)[:, None]
+        G = (pot * R * vivo).sum(0)
+        m = vivo.sum(0).long()                  # pasos usados (1..n)
+        idx = m - 1
+        cols = torch.arange(R.shape[1])
+        out = (self.o[0], self.a[0], G, OF[idx, cols], T[idx, cols], self.gamma ** m.float())
+        for lst in (self.o, self.a, self.r, self.term, self.done, self.of):
+            lst.pop(0)
+        return out
+
+
 # --------------------------------------------------------------------------
 @torch.no_grad()
-def evaluar(policy_fn, acciones, Ts_agente, n=256, t_max=8.0, seed=123, theta_lim_deg=120.0,
-            aleatorio=True, preparar=None):
-    """Desde colgando, con el Qube aleatorizado (fricción, retardo, ganancia...).
-    Éxito = el brazo nunca pasa del límite y en los últimos 2 s |alpha| < 5° y
-    |theta| < 45°. Devuelve dict con éxito, tiempo de subida y temblor."""
-    env = QubeSwingUpEnv(n, acciones, Ts_agente=Ts_agente, aleatorio=aleatorio,
-                         t_max=t_max + 5, p_abajo=1.0, seed=seed, theta_lim_deg=theta_lim_deg)
+def evaluar(policy_fn, acciones, incremental, Ts_agente, n=256, t_max=8.0, seed=123,
+            theta_lim_deg=120.0, aleatorio=True, preparar=None,
+            filtro_w=FILTRO_W, filtro_zeta=FILTRO_ZETA):
+    """Desde colgando. Éxito = el brazo nunca pasa del límite y en los últimos
+    2 s |alpha| < 5° y |theta| < 45°. Devuelve éxito, subida, temblor de alpha y
+    rizo del voltaje que llega al motor."""
+    env = QubeSwingUpEnv(n, acciones, incremental=incremental, Ts_agente=Ts_agente,
+                         aleatorio=aleatorio, t_max=t_max + 5, p_abajo=1.0, seed=seed,
+                         theta_lim_deg=theta_lim_deg, filtro_w=filtro_w, filtro_zeta=filtro_zeta)
     if preparar is not None:
         preparar(env)
     obs = env.observe()
     steps = int(round(t_max / env.Ts_agente))
     A = torch.zeros(steps, n)
     TH = torch.zeros(steps, n)
-    UU = torch.zeros(steps, n)
+    UC = torch.zeros(steps, n)
+    UF = torch.zeros(steps, n)
     vivo = torch.ones(n, dtype=torch.bool)
     for k in range(steps):
-        a = policy_fn(obs)
-        obs, _, term, _, _ = env.step(a)
+        obs, _, term, _, _ = env.step(policy_fn(obs))
         vivo &= ~term
         A[k] = envolver(env.x[:, 1])
         TH[k] = env.x[:, 0].abs()
-        UU[k] = env.acciones[a]
+        UC[k] = env.u_cmd
+        UF[k] = env.f1
     cola = int(round(2.0 / env.Ts_agente))
     ok = vivo & (A[-cola:].abs().max(0).values < 5 * DEG) & (TH[-cola:].max(0).values < 45 * DEG)
     fuera = (A.abs() > 10 * DEG).float()
@@ -108,42 +152,73 @@ def evaluar(policy_fn, acciones, Ts_agente, n=256, t_max=8.0, seed=123, theta_li
     t_sub = (fuera * idx).max(0).values * env.Ts_agente
     res = {"exito": ok.float().mean().item(), "theta_max": TH.max().item() / DEG,
            "t_subida": float("nan"), "t_subida_max": float("nan"),
-           "temblor_alpha": float("nan"), "du_rms": float("nan")}
+           "temblor_alpha": float("nan"), "du_rms": float("nan"), "rizo_motor": float("nan")}
     if ok.any():
         res["t_subida"] = t_sub[ok].mean().item()
         res["t_subida_max"] = t_sub[ok].max().item()
         Ac = A[-cola:, ok]
         res["temblor_alpha"] = (Ac - Ac.mean(0)).pow(2).mean().sqrt().item() / DEG   # ° RMS
-        res["du_rms"] = torch.diff(UU[-cola:, ok], dim=0).pow(2).mean().sqrt().item()
+        res["du_rms"] = torch.diff(UC[-cola:, ok], dim=0).pow(2).mean().sqrt().item()
+        Uf = UF[-cola:, ok]
+        res["rizo_motor"] = (Uf - Uf.mean(0)).pow(2).mean().sqrt().item()            # V RMS
     return res
 
 
+def brazo_pesado(factor=1.76):
+    """Inercia del brazo como en el modelo anterior del proyecto (Jr + mp r^2)."""
+    def preparar(env):
+        env.bp.mr[:] = env.p.mr * factor
+    return preparar
+
+
+def resumen(r):
+    return (f"éxito={100 * r['exito']:5.1f}%  subida={r['t_subida']:4.2f}s (máx {r['t_subida_max']:4.2f})  "
+            f"temblor={r['temblor_alpha']:4.2f}°  rizo={r['rizo_motor']:4.2f}V  du={r['du_rms']:4.2f}V  "
+            f"theta_max={r['theta_max']:4.0f}°")
+
+
+def clave(r):
+    """Primero éxito (redondeado), después menos temblor y menos rizo de voltaje."""
+    t, z = r["temblor_alpha"], r["rizo_motor"]
+    if t != t:
+        return (round(r["exito"], 2), -99.0)
+    return (round(r["exito"], 2), -(t + z))
+
+
+# --------------------------------------------------------------------------
 @torch.no_grad()
-def trayectoria_prueba(q, acciones, Ts_agente, segundos=6.0):
-    """Trayectoria determinista (Qube nominal) registrada a 2 ms: los ángulos
-    que ve el bloque de Simulink y el voltaje que debe dar en cada paso."""
-    from qube_model import rk4_step
-    env = QubeSwingUpEnv(1, acciones, Ts_agente=Ts_agente, aleatorio=False,
-                         t_max=segundos + 5, p_abajo=1.0)
+def trayectoria_prueba(q, acciones, incremental, Ts_agente, filtro_w, filtro_zeta, segundos=6.0):
+    """Trayectoria determinista (Qube oficial nominal) registrada a 2 ms: los
+    ángulos que ve el bloque de Simulink y el voltaje que debe sacar en cada paso."""
+    env = QubeSwingUpEnv(1, acciones, incremental=incremental, Ts_agente=Ts_agente,
+                         aleatorio=False, t_max=segundos + 5, p_abajo=1.0,
+                         filtro_w=filtro_w, filtro_zeta=filtro_zeta)
     x0 = torch.tensor([[0.0, -math.pi, 0.0, 0.0]])
     obs = env.reset(torch.ones(1, dtype=torch.bool), x0)
     X, U, XR = [], [], []
+    w, z = filtro_w, filtro_zeta
+    vmax = env.p.Vmax
     for _ in range(int(round(segundos / env.Ts_agente))):
         a = q(obs).argmax(1)
         u = env.acciones[a]
+        if incremental:
+            u = torch.clamp(env.u_cmd + u, -vmax, vmax)
         for _ in range(env.substeps):
             aw = torch.remainder(env.y[0, 1] + math.pi, 2 * math.pi) - math.pi
             X.append([env.y[0, 0].item(), aw.item(), 0.0, 0.0])
-            U.append(float(acciones[a.item()]))
+            U.append(env.f1.item())                       # salida del bloque (filtrada)
             XR.append(env.x[0].tolist())
-            env.x = rk4_step(env.x, u, env.bp, env.dt)
+            env.x = paso_rk4(env.x, env.f1, env.bp, env.dt)
+            f1n = env.f1 + env.dt * env.f2
+            f2n = env.f2 + env.dt * (w * w * (u - env.f1) - 2 * z * w * env.f2)
+            env.f1, env.f2 = f1n, f2n
             env._update_sensor()
-        env.u_prev = u.clone()
+        env.u_cmd = u.clone()
         obs = env.observe()
     return np.array(X), np.array(U).reshape(-1, 1), np.array(XR)
 
 
-def exportar(q, acciones, env, path, theta_max_deg, extra):
+def exportar(q, acciones, incremental, env, path, theta_max_deg, extra):
     lin = [m for m in q.net if isinstance(m, nn.Linear)]
     red = {}
     for i, m in enumerate(lin, start=1):
@@ -151,14 +226,19 @@ def exportar(q, acciones, env, path, theta_max_deg, extra):
         red[f"b{i}"] = m.bias.detach().double().numpy().reshape(-1, 1)
     red["x_scale"] = q.x_scale.double().numpy().reshape(-1, 1)
     red["acciones"] = np.asarray(acciones, dtype=float).reshape(-1, 1)
+    red["incremental"] = float(incremental)
+    red["Vmax"] = float(env.p.Vmax)
     red["Ts"] = float(env.dt)
     red["n_hold"] = float(env.substeps)
     a_obs = np.asarray(A_OBS, dtype=float).reshape(1, -1)           # [lento, rápido]
     red["obs_beta"] = 3 * a_obs
     red["obs_L"] = 3 * a_obs ** 2
     red["obs_m"] = a_obs ** 3 - red["obs_L"] * red["obs_beta"]
+    red["filtro_w"] = float(env.filtro_w)
+    red["filtro_zeta"] = float(env.filtro_zeta)
     red["theta_max"] = float(theta_max_deg * DEG)
-    Xt, Ut, XRt = trayectoria_prueba(q, acciones, env.Ts_agente)
+    Xt, Ut, XRt = trayectoria_prueba(q, acciones, incremental, env.Ts_agente,
+                                     env.filtro_w, env.filtro_zeta)
     d = {"red_swingup": red, "x_test": Xt, "u_test": Ut, "x_real_test": XRt}
     bloque = ROOT / "matlab" / "dqn_swingup_block.m"
     if bloque.exists():
@@ -167,89 +247,100 @@ def exportar(q, acciones, env, path, theta_max_deg, extra):
     sio.savemat(str(path), d, oned_as="column")
 
 
-def brazo_ligero(factor=0.25, retardo=2):
-    """Condición parecida al Qube real: brazo con poca inercia y algo de retardo."""
-    def preparar(env):
-        env.bp.mr[:] = env.p.mr * factor
-        env.bp.Jr = env.bp.mr * env.bp.r ** 2 / 3
-        env.retardo[:] = retardo
-    return preparar
-
-
-def resumen(r):
-    return (f"éxito={100 * r['exito']:5.1f}%  subida={r['t_subida']:4.2f}s (máx {r['t_subida_max']:4.2f})  "
-            f"temblor={r['temblor_alpha']:4.2f}°  du={r['du_rms']:4.2f}V  theta_max={r['theta_max']:4.0f}°")
-
-
-def clave(r):
-    """Primero éxito (redondeado), después menos temblor."""
-    t = r["temblor_alpha"]
-    return (round(r["exito"], 2), -(t if t == t else 99.0))
+def cargar_red(pt):
+    ck = torch.load(pt, weights_only=False)
+    a = ck["meta"]["args"] if "meta" in ck else ck["args"]
+    acc = lista_acciones(a["incremental"])
+    q = QNetSU(len(acc), tuple(a["hidden"]))
+    q.load_state_dict(ck["state_dict"])
+    return q, a, acc
 
 
 def exportar_desde_pt(pt, out):
     """Valida y exporta a .mat un checkpoint guardado durante el entrenamiento."""
-    ck = torch.load(pt, weights_only=False)
-    a = ck["meta"]["args"] if "meta" in ck else ck["args"]
-    q = QNetSU(len(ACCIONES), tuple(a["hidden"]))
-    q.load_state_dict(ck["state_dict"])
-    env = QubeSwingUpEnv(1, ACCIONES, Ts_agente=a["ts_agente"], theta_lim_deg=a["theta_lim"])
+    q, a, acc = cargar_red(pt)
+    inc = a["incremental"]
+    fw, fz = a.get("filtro_w", FILTRO_W), a.get("filtro_zeta", FILTRO_ZETA)
+    env = QubeSwingUpEnv(1, acc, incremental=inc, Ts_agente=a["ts_agente"],
+                         theta_lim_deg=a["theta_lim"], filtro_w=fw, filtro_zeta=fz)
     pol = lambda y: q(y).argmax(1)  # noqa: E731
-    r = evaluar(pol, ACCIONES, a["ts_agente"], n=1000, seed=999, theta_lim_deg=a["theta_lim"])
-    r_nom = evaluar(pol, ACCIONES, a["ts_agente"], n=64, seed=5, theta_lim_deg=a["theta_lim"],
-                    aleatorio=False)
-    r_lig = evaluar(pol, ACCIONES, a["ts_agente"], n=64, seed=5, theta_lim_deg=a["theta_lim"],
-                    aleatorio=False, preparar=brazo_ligero())
-    meta = {"acciones": ACCIONES, "Ts_agente": env.Ts_agente, "validacion": r,
-            "validacion_nominal": r_nom, "validacion_brazo_ligero": r_lig, "args": a}
+    kw = dict(theta_lim_deg=a["theta_lim"], filtro_w=fw, filtro_zeta=fz)
+    r = evaluar(pol, acc, inc, a["ts_agente"], n=1000, seed=999, **kw)
+    r_nom = evaluar(pol, acc, inc, a["ts_agente"], n=64, seed=5, aleatorio=False, **kw)
+    r_pes = evaluar(pol, acc, inc, a["ts_agente"], n=64, seed=5, aleatorio=False,
+                    preparar=brazo_pesado(), **kw)
+    meta = {"acciones": acc, "incremental": inc, "Ts_agente": env.Ts_agente, "validacion": r,
+            "validacion_oficial_nominal": r_nom, "validacion_brazo_pesado": r_pes, "args": a}
     out.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": q.state_dict(), "meta": meta}, out.with_suffix(".pt"))
-    exportar(q, ACCIONES, env, out.with_suffix(".mat"), theta_max_deg=a["theta_lim"] + 30,
+    exportar(q, acc, inc, env, out.with_suffix(".mat"), theta_max_deg=a["theta_lim"] + 30,
              extra={"exito_val": r["exito"]})
     out.with_suffix(".json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
-    print(f"Validación aleatorizada (1000): {resumen(r)}")
-    print(f"Validación nominal        (64): {resumen(r_nom)}")
-    print(f"Brazo ligero + 4 ms       (64): {resumen(r_lig)}")
+    print(f"Qube aleatorio      (1000): {resumen(r)}")
+    print(f"Modelo oficial nominal (64): {resumen(r_nom)}")
+    print(f"Brazo pesado x1.76     (64): {resumen(r_pes)}")
     print(f"->  {out.with_suffix('.mat')}")
+
+
+def iniciar_desde(q, pt):
+    """Copia los pesos de otro checkpoint; si tiene menos entradas (versión
+    anterior), las columnas nuevas de la primera capa empiezan en cero."""
+    sd = torch.load(pt, weights_only=False)["state_dict"]
+    propio = q.state_dict()
+    for k, v in sd.items():
+        if k not in propio or k == "x_scale":
+            continue
+        if v.shape == propio[k].shape:
+            propio[k] = v.clone()
+        elif v.dim() == 2 and v.shape[0] == propio[k].shape[0] and v.shape[1] < propio[k].shape[1]:
+            nuevo = torch.zeros_like(propio[k])
+            nuevo[:, :v.shape[1]] = v
+            propio[k] = nuevo
+    q.load_state_dict(propio)
 
 
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--incremental", action="store_true", help="acciones = incrementos de voltaje")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--n-envs", type=int, default=32)
-    ap.add_argument("--pasos", type=int, default=200_000)
+    ap.add_argument("--pasos", type=int, default=150_000)
     ap.add_argument("--updates", type=int, default=2)
     ap.add_argument("--batch", type=int, default=256)
-    ap.add_argument("--gamma", type=float, default=0.997)
-    ap.add_argument("--nstep", type=int, default=15)
+    ap.add_argument("--gamma", type=float, default=0.995)
+    ap.add_argument("--nstep", type=int, default=10)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--target-cada", type=int, default=1000)
     ap.add_argument("--buffer", type=int, default=1_000_000)
     ap.add_argument("--warmup", type=int, default=20_000)
-    ap.add_argument("--eps-pasos", type=int, default=40_000)
+    ap.add_argument("--eps-inicial", type=float, default=1.0)
+    ap.add_argument("--eps-pasos", type=int, default=30_000)
     ap.add_argument("--eps-final", type=float, default=0.05)
-    ap.add_argument("--ts-agente", type=float, default=0.006)
+    ap.add_argument("--ts-agente", type=float, default=0.01)
     ap.add_argument("--theta-lim", type=float, default=120.0)
+    ap.add_argument("--filtro-w", type=float, default=FILTRO_W, help="corte del filtro (rad/s)")
+    ap.add_argument("--filtro-zeta", type=float, default=FILTRO_ZETA)
     ap.add_argument("--hidden", type=int, nargs="+", default=[256, 256])
     ap.add_argument("--eval-cada", type=int, default=5_000)
     ap.add_argument("--out", default=str(ROOT / "models" / NOMBRE))
     ap.add_argument("--exportar-pt", default="", help="solo exporta este .pt a --out (.mat)")
     ap.add_argument("--init-pt", default="", help="continúa el entrenamiento desde este .pt")
-    ap.add_argument("--eps-inicial", type=float, default=1.0)
     args = ap.parse_args()
     if args.exportar_pt:
         return exportar_desde_pt(args.exportar_pt, Path(args.out))
 
+    print(f"[modelo oficial] deriva de energía sin motor ni fricción: {prueba_energia():.1e}")
     torch.manual_seed(args.seed)
     gen = torch.Generator().manual_seed(args.seed)
-    acciones = ACCIONES
+    acciones = lista_acciones(args.incremental)
     nA = len(acciones)
-    env = QubeSwingUpEnv(args.n_envs, acciones, Ts_agente=args.ts_agente, seed=args.seed,
-                         theta_lim_deg=args.theta_lim)
+    env = QubeSwingUpEnv(args.n_envs, acciones, incremental=args.incremental,
+                         Ts_agente=args.ts_agente, seed=args.seed, theta_lim_deg=args.theta_lim,
+                         filtro_w=args.filtro_w, filtro_zeta=args.filtro_zeta)
     q = QNetSU(nA, tuple(args.hidden))
     if args.init_pt:
-        q.load_state_dict(torch.load(args.init_pt, weights_only=False)["state_dict"])
+        iniciar_desde(q, args.init_pt)
     q_obj = copy.deepcopy(q)
     opt = torch.optim.Adam(q.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.pasos, eta_min=args.lr / 20)
@@ -265,6 +356,7 @@ def main():
     t0, n_grad = time.time(), 0
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    pol = lambda y: q(y).argmax(1)  # noqa: E731
 
     for paso in range(1, args.pasos + 1):
         eps = max(args.eps_final,
@@ -308,18 +400,19 @@ def main():
             sched.step()
 
         if paso % args.eval_cada == 0 or paso == args.pasos:
-            res = evaluar(lambda y: q(y).argmax(1), acciones, args.ts_agente,
-                          theta_lim_deg=args.theta_lim)
-            lig = evaluar(lambda y: q(y).argmax(1), acciones, args.ts_agente, n=64, seed=5,
-                          theta_lim_deg=args.theta_lim, aleatorio=False, preparar=brazo_ligero())
+            kw = dict(theta_lim_deg=args.theta_lim, filtro_w=args.filtro_w,
+                      filtro_zeta=args.filtro_zeta)
+            res = evaluar(pol, acciones, args.incremental, args.ts_agente, **kw)
+            nom = evaluar(pol, acciones, args.incremental, args.ts_agente, n=64, seed=5,
+                          aleatorio=False, **kw)
             if clave(res) >= mejor:
                 mejor = clave(res)
                 torch.save({"state_dict": copy.deepcopy(q.state_dict()), "args": vars(args),
                             "validacion": res, "paso": paso}, out.with_suffix(".pt"))
             rm = np.mean(retornos[-100:]) if retornos else float("nan")
             print(f"paso {paso:6d}/{args.pasos}  eps={eps:.2f}  retorno={rm:7.1f}  {resumen(res)}  "
-                  f"| ligero: {100 * lig['exito']:3.0f}% {lig['temblor_alpha']:4.2f}° {lig['du_rms']:4.2f}V  "
-                  f"[{time.time() - t0:5.0f}s]", flush=True)
+                  f"| oficial: {100 * nom['exito']:3.0f}% {nom['temblor_alpha']:4.2f}° "
+                  f"{nom['rizo_motor']:4.2f}V  [{time.time() - t0:5.0f}s]", flush=True)
 
     exportar_desde_pt(out.with_suffix(".pt"), out)
 

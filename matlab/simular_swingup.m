@@ -1,9 +1,10 @@
 function s = simular_swingup(red_swingup, p, x0, T, opc)
-%SIMULAR_SWINGUP Simula el Qube NO lineal controlado por dqn_swingup_block.
+%SIMULAR_SWINGUP Simula el Qube (modelo no lineal OFICIAL de Quanser)
+%   controlado por dqn_swingup_block.
 %   s = simular_swingup(red_swingup, p, x0, T, opc)
 %   red_swingup : struct del .mat de la red
-%   p           : struct de qube_params(); opcional p.tau_c = fricción seca
-%                 del brazo (N·m)
+%   p           : struct de qube_parametros_oficiales(); opcional p.tau_c =
+%                 fricción seca del brazo (N·m)
 %   x0          : [theta; alpha; theta_dot; alpha_dot], alpha = 0 arriba, +-pi colgando
 %   T           : duración (s)
 %   opc         : struct opcional con lo que el modelo ideal no tiene:
@@ -33,15 +34,15 @@ for k = 1:nT
 
     % --- bloque de Simulink (red DQN)
     u = dqn_swingup_block([y_th; y_al; 0; 0], red_swingup);
-    U(k) = u;
+    U(k) = u;                                % ya filtrado por el bloque
     fifo = [u, fifo(1:end-1)];
     ur = opc.k_u*fifo(end);                  % voltaje que realmente llega al motor
 
     % --- planta no lineal (RK4)
-    k1 = qube_nonlinear_dynamics(x,           ur, p);
-    k2 = qube_nonlinear_dynamics(x + dt/2*k1, ur, p);
-    k3 = qube_nonlinear_dynamics(x + dt/2*k2, ur, p);
-    k4 = qube_nonlinear_dynamics(x + dt*k3,   ur, p);
+    k1 = qube_dinamica_oficial(x,           ur, p);
+    k2 = qube_dinamica_oficial(x + dt/2*k1, ur, p);
+    k3 = qube_dinamica_oficial(x + dt/2*k2, ur, p);
+    k4 = qube_dinamica_oficial(x + dt*k3,   ur, p);
     x  = x + dt/6*(k1 + 2*k2 + 2*k3 + k4);
     X(:,k+1) = x;
 end
@@ -55,4 +56,6 @@ s.exito = max(abs(s.alpha_env(cola))) < 5*pi/180 && max(abs(X(1,cola))) < 45*pi/
 fuera = find(abs(s.alpha_env) > 10*pi/180, 1, 'last');
 s.t_subida = s.t(fuera);
 s.temblor  = std(s.alpha_env(cola))*180/pi;  % grados RMS en los últimos 2 s
+s.rizo_v   = std(U(cola(1:end-1)));          % rizo del voltaje al motor (V RMS)
+s.dvdt     = sqrt(mean((diff(U(cola(1:end-1)))/dt).^2));   % V/s RMS
 end

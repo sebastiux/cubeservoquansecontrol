@@ -243,7 +243,8 @@ del Qube solo hacen falta **dos archivos**, en la misma carpeta:
 
 | Versión | Red | Modelo de Simulink | Estado |
 |---|---|---|---|
-| **v2 (actual)** | `models/dqn_swingup_v2_qube.mat` | `simulink/qs3_dqn_swingup_v2_ctrl.slx` | robusta; pendiente de probar en el Qube |
+| **v3 (actual)** | `models/dqn_swingup_v3_qube.mat` | `simulink/qs3_dqn_swingup_v3_ctrl.slx` | modelo oficial de Quanser + filtro óptimo dentro del bloque; pendiente de probar en el Qube |
+| v2 | `models/dqn_swingup_v2_qube.mat` | `simulink/qs3_dqn_swingup_v2_ctrl.slx` | probada en el Qube: con un filtro añadido a mano funciona casi perfecto |
 | v1 | `models/dqn_swingup_qube.mat` | `simulink/qs3_dqn_swingup_ctrl.slx` | probada en el Qube: sube, pero tiembla |
 
 Pasos:
@@ -278,7 +279,7 @@ Es decir, el brazo real parece tener bastante menos inercia que `mr·r²/3`
 * velocidades estimadas en el propio bloque con dos observadores (a = 100 y
   a = 250) sobre α desenrollado; ya no usa las velocidades del modelo.
 
-Resultados de la v2 en simulación (`matlab/prueba_swingup_modelo_no_lineal.m`):
+Resultados de la v2 en simulación (con el modelo anterior del proyecto):
 
 | Prueba | Resultado |
 |---|---|
@@ -290,9 +291,73 @@ Resultados de la v2 en simulación (`matlab/prueba_swingup_modelo_no_lineal.m`):
 
 ![swing-up](models/figuras/swingup_dqn.png)
 
+### v3: modelo oficial de Quanser y filtro óptimo para proteger el motor
+
+La v3 se entrena con el modelo no lineal oficial de Quanser
+(`python/qube_model_oficial.py`; no usa ningún modelo linealizado; la
+implementación se comprueba con la conservación de la energía) y con un filtro
+pasa bajas de 2.º orden a la salida de la red **dentro del lazo de
+entrenamiento**. El filtro está programado dentro del bloque de Simulink:
+**no hay que añadir otro filtro después**.
+
+**¿Qué filtro?** `python/analisis_filtro.py` lo determina en dos pasos.
+
+1. *Barrido con una red que no conoce el filtro (v2).* El filtro protege al
+   motor, pero su retraso cuesta control; y hay límites por ambos lados:
+
+   | Corte (ζ = 1) | Retraso | Éxito | dV/dt | Mayor salto de corriente |
+   |---|---|---|---|---|
+   | sin filtro | 0 ms | 93 % | 285 V/s | 3.84 A |
+   | 100 rad/s | 20 ms | 75 % | 47 | 0.29 A |
+   | 200 rad/s | 10 ms | 81 % | 88 | 0.66 A |
+   | 400 rad/s | 5 ms | 88 % | 197 | 2.46 A |
+   | 600 rad/s | 3.3 ms | 88 % | 438 | 5.53 A |
+
+   Por debajo de ~100 rad/s el retraso (≥ 20 ms) tumba el péndulo; por encima
+   de ~400 rad/s el filtro, integrado a 2 ms, ya no protege (a 600 es peor que
+   no filtrar). ζ = 1 es mejor que ζ = 0.707 a igual retraso.
+
+2. *Co-diseño: una red entrenada con cada filtro candidato*, medida con su
+   propio filtro en los mismos 192 Qubes aleatorios:
+
+   ![co-diseño](models/figuras/analisis_filtro_codiseno.png)
+
+   | Filtro | Éxito | Temblor α | dV/dt | Inversiones/s | Salto máx. de corriente |
+   |---|---|---|---|---|---|
+   | sin filtro (v2) | 93.2 % | 0.38° | 285 V/s | 43 | 3.84 A |
+   | 100 rad/s | 92.7 % | 0.62° | 19 | 0.2 | 0.29 A |
+   | **150 rad/s** | 97.9 % | 0.60° | 42 | 4.4 | 0.51 A |
+   | 200 rad/s | 96.4 % | 0.51° | 52 | 6.2 | 0.74 A |
+   | 300 rad/s | 95.8 % | 0.53° | 71 | 7.7 | 1.36 A |
+
+   Repetido con dos entrenamientos por filtro y el rango de inercia ampliado:
+   150 rad/s → éxito 94.8–95.3 %, temblor 0.49–0.55°, dV/dt 38–39 V/s, salto
+   0.50 A; 200 rad/s → 94.3–96.4 %, 0.47–0.52°, 45–52 V/s, 0.74 A.
+
+**Conclusión: filtro de 150 rad/s, ζ = 1.** Da el mismo control que 200 rad/s
+(las diferencias de éxito y temblor están dentro del ruido estadístico) con
+menos esfuerzo del motor. Frente a no filtrar: dV/dt ÷ 6.7, inversiones de
+voltaje ÷ 30, potencia disipada ÷ 3.3 y el mayor salto de corriente baja de
+3.8 A a 0.5 A. El costo es un temblor algo mayor en simulación (0.33° → 0.55°
+RMS), por el retraso de 13 ms. Entrenar la red con el filtro es lo que
+recupera el control: la misma red sin entrenar con él baja a ~77 % de éxito.
+
+Resultados de la v3 (`matlab/prueba_swingup_modelo_no_lineal.m`):
+
+| Prueba | Resultado |
+|---|---|
+| Bloque de Simulink vs Python (3000 pasos) | diferencia máxima 1e-6 V |
+| 1000 Qubes aleatorios (Python) | 95.9 % de éxito, subida media 0.97 s, temblor 0.56° RMS |
+| Modelo oficial nominal | 100 %, subida 0.76 s |
+| Brazo ×1.76 (inercia del modelo anterior) | 100 % |
+| Monte Carlo en MATLAB, 40 casos | 92 %, subida media 0.95 s, temblor medio 0.52° RMS |
+
+El rango de entrenamiento de la v3: inercia del brazo ×0.7 a ×1.9 de la
+oficial, motor ×0.8 a ×1.25, retardo extra de 0 a 6 ms, fricción seca.
+
 ### Registro de datos para calibrar el modelo
 
-`qs3_dqn_swingup_v2_ctrl.slx` incluye dos bloques *To Workspace* (`datos_x`,
+Los modelos v2 y v3 incluyen dos bloques *To Workspace* (`datos_x`,
 `datos_u`) que guardan a 2 ms la señal X y el voltaje. Después de una corrida:
 
 ```matlab

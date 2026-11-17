@@ -1,29 +1,30 @@
 %% PRUEBA_SWINGUP_MODELO_NO_LINEAL
 % Prueba, solo con MATLAB (sin Simulink ni QUARC), de la red DQN que LEVANTA
-% el péndulo y lo mantiene arriba. Usa el mismo código del bloque de Simulink.
+% el péndulo y lo mantiene arriba. Usa el mismo código del bloque de Simulink
+% (con su filtro pasa bajas) y el modelo no lineal OFICIAL de Quanser.
 %
 %   1) Verifica que el bloque reproduce los voltajes calculados en Python
 %   2) Swing-up desde colgando (modelo no lineal + encoders + observador)
 %   3) Monte Carlo: parámetros físicos +-15 % y ruido
 %
-% Necesita en la misma carpeta (o en ../models): dqn_swingup_v2_qube.mat
+% Necesita en la misma carpeta (o en ../models): dqn_swingup_v3_qube.mat
 
 clc; close all;
 aqui_ = fileparts(mfilename('fullpath'));
 addpath(aqui_);
 mat_ = '';
-cand_ = {fullfile(aqui_, 'dqn_swingup_v2_qube.mat'), fullfile(aqui_, '..', 'models', 'dqn_swingup_v2_qube.mat'), ...
-         fullfile(pwd, 'dqn_swingup_v2_qube.mat'), which('dqn_swingup_v2_qube.mat')};
+cand_ = {fullfile(aqui_, 'dqn_swingup_v3_qube.mat'), fullfile(aqui_, '..', 'models', 'dqn_swingup_v3_qube.mat'), ...
+         fullfile(pwd, 'dqn_swingup_v3_qube.mat'), which('dqn_swingup_v3_qube.mat')};
 for k_ = 1:numel(cand_)
     if isempty(mat_) && ~isempty(cand_{k_}) && exist(cand_{k_}, 'file') == 2, mat_ = cand_{k_}; end
 end
 if isempty(mat_)
-    error('No encuentro dqn_swingup_v2_qube.mat. Ponlo en la misma carpeta que este script (%s).', aqui_);
+    error('No encuentro dqn_swingup_v3_qube.mat. Ponlo en la misma carpeta que este script (%s).', aqui_);
 end
 fprintf('Red: %s\n', mat_);
 S = load(mat_);
 red_swingup = S.red_swingup;
-p   = qube_params();
+p   = qube_parametros_oficiales();          % modelo oficial de Quanser
 d2r = pi/180;
 
 %% 1) Verificación contra Python (misma secuencia de mediciones -> mismos voltajes)
@@ -33,20 +34,20 @@ u_ = zeros(n_, 1);
 for k_ = 1:n_
     u_(k_) = dqn_swingup_block(S.x_test(k_, :)', red_swingup);
 end
-dif_ = sum(abs(u_ - S.u_test(:)) > 1e-6);
-fprintf('Verificación vs Python: %d de %d pasos con voltaje distinto (%.2f %%)\n', dif_, n_, 100*dif_/n_);
+% La salida es el voltaje ya filtrado (Python lo calcula en precisión simple)
+dif_ = sum(abs(u_ - S.u_test(:)) > 1e-3);
+fprintf('Verificación vs Python: %d de %d pasos con voltaje distinto (diferencia máxima %.1e V)\n', ...
+        dif_, n_, max(abs(u_ - S.u_test(:))));
 
 %% 2) Swing-up desde colgando (Qube ideal y Qube "difícil")
-% El caso "brazo ligero" imita al Qube real: inercia del brazo 4 veces menor que
-% mr*r^2/3 y 4 ms de retardo (con eso la red anterior temblaba como en el hardware).
-casos = {'modelo ideal', struct(), 1; 'brazo ligero (inercia/4) + 4 ms', struct('retardo', 2), 0.25};
+casos = {'modelo oficial de Quanser', struct(), 1; 'brazo x1.4, motor -15 %, +4 ms', struct('retardo', 2, 'k_u', 0.85), 1.4};
 fig = figure('Name', 'Swing-up DQN (modelo no lineal)', 'Position', [100 100 900 700]);
 est = {'b', 'r'};
 for c_ = 1:size(casos, 1)
     pc = p;  pc.mr = p.mr*casos{c_, 3};
     s = simular_swingup(red_swingup, pc, [0; -pi; 0; 0], 10, casos{c_, 2});
-    fprintf('Swing-up %-34s éxito=%d  subida=%.2f s  |theta|max=%.0f°  temblor=%.2f° RMS\n', ...
-            casos{c_, 1}, s.exito, s.t_subida, max(abs(s.X(1,:)))/d2r, s.temblor);
+    fprintf('Swing-up %-32s éxito=%d  subida=%.2f s  |theta|max=%.0f°  temblor=%.2f°  rizo=%.2f V  dV/dt=%.0f V/s\n', ...
+            casos{c_, 1}, s.exito, s.t_subida, max(abs(s.X(1,:)))/d2r, s.temblor, s.rizo_v, s.dvdt);
     subplot(3,1,1); hold on; plot(s.t, s.alpha_env/d2r, est{c_});
     subplot(3,1,2); hold on; plot(s.t, s.X(1,:)/d2r, est{c_});
     subplot(3,1,3); hold on; stairs(s.t(1:end-1), s.U, est{c_});
@@ -71,10 +72,10 @@ for i_ = 1:N
     for f_ = {'Rm', 'km', 'r', 'mp', 'Lp'}
         pm.(f_{1}) = p.(f_{1})*(1 + 0.15*(2*rand - 1));
     end
-    pm.mr = p.mr*(0.2 + 0.9*rand);                   % inercia del brazo x0.2 a x1.1
+    pm.mr = p.mr*(0.7 + 0.8*rand);                   % inercia del brazo x0.7 a x1.5
     pm.br = p.br*(0.5 + 2.5*rand);  pm.bp = p.bp*(0.5 + 2.5*rand);
     pm.tau_c = 3e-3*rand;
-    opc = struct('retardo', randi([0 4]), 'k_u', 0.8 + 0.45*rand, 'offset', (2*rand - 1)*d2r);
+    opc = struct('retardo', randi([0 3]), 'k_u', 0.8 + 0.45*rand, 'offset', (2*rand - 1)*d2r);
     x0 = [0.2*(2*rand-1); -pi + 0.1*(2*rand-1); 0; 0.5*(2*rand-1)];
     si = simular_swingup(red_swingup, pm, x0, 8, opc);
     ok_(i_) = si.exito;  ts_(i_) = si.t_subida;  thm_(i_) = max(abs(si.X(1,:)))/d2r;  tb_(i_) = si.temblor;
