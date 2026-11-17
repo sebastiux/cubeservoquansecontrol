@@ -1,12 +1,12 @@
 """
-Genera simulink/qs3_dqn_swingup_v3_ctrl.slx a partir del modelo original de
+Genera simulink/qs3_dqn_swingup_v4_ctrl.slx a partir del modelo original de
 Quanser (qs3_lqr_ctrl_simulinkFInal.slx) SIN usar Simulink: un .slx es un
 zip de archivos XML y aquí se editan directamente.
 
 Cambios respecto al original:
   * El bloque "MATLAB Function" (antes: condición |alpha| <= 15°) pasa a ser
     el controlador DQN de swing-up + balance. Carga la red con
-    coder.load('dqn_swingup_v3_qube.mat') y recibe la señal X completa.
+    coder.load('dqn_swingup_v4_qube.mat') y recibe la señal X completa.
   * Se eliminan: ganancia "u = -K*x", Sum, switch de balance y constante 0 V.
   * Se añade un Zero-Order Hold de 2 ms entre X y el controlador.
   * Las ganancias L, beta, m de los observadores quedan escritas como números
@@ -29,9 +29,9 @@ from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 ORIGINAL = ROOT / "simulink" / "qs3_lqr_ctrl_simulinkFInal.slx"
-DESTINO = ROOT / "simulink" / "qs3_dqn_swingup_v3_ctrl.slx"
+DESTINO = ROOT / "simulink" / "qs3_dqn_swingup_v4_ctrl.slx"
 BLOQUE = ROOT / "matlab" / "dqn_swingup_block.m"
-NOMBRE_MAT = "dqn_swingup_v3_qube.mat"
+NOMBRE_MAT = "dqn_swingup_v4_qube.mat"
 
 SID_ZOH, SID_LOGX, SID_LOGU = 302, 303, 304      # SID nuevos (el original llega a 301)
 

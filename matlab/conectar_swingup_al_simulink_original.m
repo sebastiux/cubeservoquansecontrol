@@ -6,20 +6,20 @@ function nuevo = conectar_swingup_al_simulink_original(modelo_original)
 %   conectar_swingup_al_simulink_original('C:\...\qs3_lqr_ctrl_simulinkFInal.slx')
 %
 %   Solo necesita MATLAB/Simulink y dos archivos:
-%     dqn_swingup_v3_qube.mat             (la red entrenada; junto a este script)
+%     dqn_swingup_v4_qube.mat             (la red entrenada; junto a este script)
 %     qs3_lqr_ctrl_simulinkFInal.slx   (tu modelo original; no se modifica)
 %
-%   Crea una copia  qs3_dqn_swingup_v3_ctrl.slx  junto a tu modelo. En la copia:
+%   Crea una copia  qs3_dqn_swingup_v4_ctrl.slx  junto a tu modelo. En la copia:
 %     Qube With Pendulum (X) -> ZOH (2 ms) -> Controlador DQN swing-up
 %                            -> Enable Balance Control Switch -> Qube
 %   * Se eliminan la ganancia K y el bloque Sum (ya no hay LQR).
 %   * El switch ya no depende de |alpha| <= 15°: su control pasa a la constante
 %     "Habilitar control" (1 = red activa, 0 = 0 V). Sirve de paro manual.
-%   * El bloque carga la red con coder.load('dqn_swingup_v3_qube.mat'), así que no
+%   * El bloque carga la red con coder.load('dqn_swingup_v4_qube.mat'), así que no
 %     hay parámetros que configurar.
 
 aqui = fileparts(mfilename('fullpath'));
-NOMBRE_MAT = 'dqn_swingup_v3_qube.mat';
+NOMBRE_MAT = 'dqn_swingup_v4_qube.mat';
 ORIGINAL   = 'qs3_lqr_ctrl_simulinkFInal.slx';
 
 % ---------------------------------------------------------- localizar archivos
@@ -46,7 +46,7 @@ fprintf('Red:              %s\nModelo original:  %s\n', archivo_mat, modelo_orig
 % ---------------------------------------------------------- copia del modelo
 carpeta = fileparts(modelo_original);
 if isempty(carpeta), carpeta = pwd; end
-nuevo   = 'qs3_dqn_swingup_v3_ctrl';
+nuevo   = 'qs3_dqn_swingup_v4_ctrl';
 destino = fullfile(carpeta, [nuevo '.slx']);
 if bdIsLoaded(nuevo), close_system(nuevo, 0); end
 copyfile(modelo_original, destino, 'f');

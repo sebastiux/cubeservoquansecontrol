@@ -1,6 +1,6 @@
 function u = dqn_swingup_block(x, red_swingup)
 %DQN_SWINGUP_BLOCK Red DQN que LEVANTA el pendulo (swing-up) y lo MANTIENE
-%   arriba. Control inverso: estado medido -> voltaje del motor.  (version 3)
+%   arriba. Control inverso: estado medido -> voltaje del motor.  (version 4)
 %
 %   x          : senal X de "Qube With Pendulum". Solo se usan los angulos de
 %                los encoders: x(1) = theta, x(2) = alpha envuelto a (-pi, pi]

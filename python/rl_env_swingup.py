@@ -1,5 +1,5 @@
 """
-Entorno RL (vectorizado) del Qube-Servo 3 para SWING-UP + BALANCE (versión 3).
+Entorno RL (vectorizado) del Qube-Servo 3 para SWING-UP + BALANCE (versión 4).
 
 Planta: MODELO NO LINEAL OFICIAL de Quanser (qube_model_oficial.py), integrado
 con RK4 a 2 ms. No se usa ningún modelo linealizado.
@@ -7,16 +7,17 @@ con RK4 a 2 ms. No se usa ningún modelo linealizado.
 Lazo completo, igual que en el Simulink del Qube:
 
   red DQN -> voltaje ordenado -> FILTRO PASA BAJAS de 2.º orden
-          (w = 150 rad/s, zeta = 1, Euler a 2 ms como ode1) -> motor
+          (w = 300 rad/s, zeta = 1, Euler a 2 ms como ode1) -> motor
   encoders (2048 cuentas/rev) -> observadores de velocidad -> red DQN
 
 El filtro va DENTRO del entrenamiento: la red ve su estado y aprende a
-compensar su retraso (~10 ms).
+compensar su retraso (~7 ms).
 
 Cada episodio usa un Qube distinto (lo que el modelo ideal no garantiza):
   * inercia del brazo x0.7 a x1.9 de la oficial (mr*r^2/3), resto ±15 %
     (x1.76 equivale a sumar mp*r^2, como en el modelo anterior del proyecto),
-  * ganancia voltaje->par x0.8 a x1.25, retardo extra de 0 a 3 muestras,
+  * ganancia voltaje->par x0.8 a x1.25, retardo extra de 0 a 7 muestras
+    (0 a 14 ms: en el Qube real la v3, entrenada con 0 a 6 ms, subía y se caía),
   * fricción seca del brazo (0 a 3 mN·m), amortiguamientos x0.5 a x3,
   * error de cero del encoder del péndulo (±1°).
 
@@ -41,12 +42,12 @@ from qube_model_oficial import LoteParametros, ParametrosQube, paso_rk4
 DEG = math.pi / 180
 
 A_OBS = (100.0, 250.0)                      # polos de los observadores (lento, rápido)
-FILTRO_W, FILTRO_ZETA = 150.0, 1.0          # pasa bajas óptimo (ver analisis_filtro.py)
+FILTRO_W, FILTRO_ZETA = 300.0, 1.0          # pasa bajas óptimo (ver analisis_filtro.py)
 X_SCALE_SU = np.array([1.0, 1.0, 1.0, 5.0, 10.0, 5.0, 10.0, 10.0, 10.0, 2000.0])
 # Para reflejar un estado (x -> -x, u -> -u); cos(alpha) no cambia
 ESPEJO = np.array([-1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0])
 N_OBS = len(X_SCALE_SU)
-MAX_RETARDO = 3                             # muestras de 2 ms
+MAX_RETARDO = 7                             # muestras de 2 ms (hasta 14 ms)
 
 
 def envolver(a):
@@ -94,6 +95,10 @@ class QubeSwingUpEnv:
         self.u_fifo = torch.zeros(n, MAX_RETARDO + 1)
         self.retardo = torch.zeros(n, dtype=torch.long)
         self.k_u = torch.ones(n)                     # ganancia de voltaje
+        self.zona_muerta = torch.zeros(n)            # voltaje mínimo que mueve el motor (V)
+        self.filtro2_w = 0.0                         # 2.º filtro en serie (solo para pruebas)
+        self.g1 = torch.zeros(n)
+        self.g2 = torch.zeros(n)
         self.offset = torch.zeros(n)                 # error de cero de alpha
         self.t = torch.zeros(n, dtype=torch.long)
         self.bp = LoteParametros(self.p, n)
@@ -199,6 +204,15 @@ class QubeSwingUpEnv:
             self.u_fifo = torch.roll(self.u_fifo, 1, dims=1)
             self.u_fifo[:, 0] = self.f1
             u_real = self.k_u * self.u_fifo[filas, self.retardo]
+            if self.filtro2_w > 0:                  # filtro externo adicional (Euler)
+                w2 = self.filtro2_w
+                salida2 = self.g1
+                g1n = self.g1 + self.dt * self.g2
+                self.g2 = self.g2 + self.dt * (w2 * w2 * (u_real - self.g1) - 2 * w2 * self.g2)
+                self.g1 = g1n
+                u_real = salida2
+            # zona muerta: por debajo de ese voltaje el motor no entrega par
+            u_real = torch.sign(u_real) * torch.clamp(u_real.abs() - self.zona_muerta, min=0.0)
             if self.registro is not None:
                 self.registro.append((u_real.clone(), self.x.clone()))
             self.x = paso_rk4(self.x, u_real, self.bp, self.dt)

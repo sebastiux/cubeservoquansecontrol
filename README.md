@@ -243,7 +243,8 @@ del Qube solo hacen falta **dos archivos**, en la misma carpeta:
 
 | Versión | Red | Modelo de Simulink | Estado |
 |---|---|---|---|
-| **v3 (actual)** | `models/dqn_swingup_v3_qube.mat` | `simulink/qs3_dqn_swingup_v3_ctrl.slx` | modelo oficial de Quanser + filtro óptimo dentro del bloque; pendiente de probar en el Qube |
+| **v4 (actual)** | `models/dqn_swingup_v4_qube.mat` | `simulink/qs3_dqn_swingup_v4_ctrl.slx` | como la v3, pero entrenada con retardos de hasta 14 ms y filtro de 300 rad/s; pendiente de probar en el Qube |
+| v3 | `models/dqn_swingup_v3_qube.mat` | `simulink/qs3_dqn_swingup_v3_ctrl.slx` | probada en el Qube: más suave, pero sube y se cae pronto |
 | v2 | `models/dqn_swingup_v2_qube.mat` | `simulink/qs3_dqn_swingup_v2_ctrl.slx` | probada en el Qube: con un filtro añadido a mano funciona casi perfecto |
 | v1 | `models/dqn_swingup_qube.mat` | `simulink/qs3_dqn_swingup_ctrl.slx` | probada en el Qube: sube, pero tiembla |
 
@@ -354,6 +355,66 @@ Resultados de la v3 (`matlab/prueba_swingup_modelo_no_lineal.m`):
 
 El rango de entrenamiento de la v3: inercia del brazo ×0.7 a ×1.9 de la
 oficial, motor ×0.8 a ×1.25, retardo extra de 0 a 6 ms, fricción seca.
+
+### v4: por qué la v3 se caía en el Qube y cómo cambia el filtro óptimo
+
+En el hardware la v3 resultó más suave pero subía y se caía pronto, mientras
+la v2 con un filtro externo de 200 rad/s se sostenía oscilando.
+`python/diagnostico_robustez.py` simula cada red con una sola diferencia
+respecto al modelo; la única que reproduce ese comportamiento es **más retardo
+en el lazo** (la inercia, la ganancia del motor, la zona muerta y la fricción
+seca no distinguen entre las dos redes):
+
+| Retardo extra del hardware | v2 + filtro 200 | v3 (filtro 150) | v4 (filtro 300) |
+|---|---|---|---|
+| 6 ms | se sostiene | se sostiene | se sostiene |
+| 10 ms | se sostiene, oscila 1.3° | sube y se cae (19 %) | se sostiene, 0.40° |
+| 14 ms | se cae | se cae | se sostiene, 0.57° |
+| 18 ms | se cae | se cae | 58 % |
+
+El filtro de 150 rad/s (13 ms) ya consumía el margen de retardo. La v4 se
+entrena con retardos extra de 0 a 14 ms y el co-diseño se repitió con ese
+rango (192 Qubes aleatorios):
+
+| Filtro | Éxito | Temblor α | dV/dt | Salto máx. de corriente | Se sostiene con +14 ms |
+|---|---|---|---|---|---|
+| sin filtro (v2) | 90.6 % | 0.48° | 259 V/s | 3.83 A | no |
+| 150 rad/s | 93.2 % | 0.65° | 33 | 0.48 A | 15 % |
+| 200 rad/s (dos entrenamientos) | 91–93 % | 0.55–0.64° | 49–54 | 1.1–1.6 A | 88–98 % |
+| **300 rad/s** | **95.8 %** | **0.51°** | 69 | 1.38 A | **100 %** |
+
+**El filtro óptimo depende del retardo del lazo.** Con poco retardo era 150
+rad/s; con el retardo que muestra el hardware es **300 rad/s, ζ = 1**: es el
+que mejor controla y el único que se sostiene en toda la banda de retardo, y
+sigue protegiendo al motor (dV/dt ÷ 3.7, potencia ÷ 3.2, salto de corriente
+3.8 A → 1.4 A frente a no filtrar).
+
+Resultados de la v4: 96.0 % de éxito en 1000 Qubes aleatorios (subida media
+0.95 s, temblor 0.57° RMS); 100 % en el modelo oficial nominal y con el brazo
+×1.76; Monte Carlo en MATLAB 92 % de 40 casos; bloque vs Python: diferencia
+máxima 1e-6 V.
+
+### Guardar y analizar una corrida del Qube
+
+Los modelos registran a 2 ms la señal X y el voltaje (`datos_x`, `datos_u`).
+Después de detener la corrida, en MATLAB:
+
+```matlab
+analizar_corrida                          % guarda corrida_AAAAMMDD_HHMMSS.mat y grafica
+analizar_corrida('corrida_....mat')       % reanaliza un archivo guardado
+```
+
+`matlab/analizar_corrida.m` es un único archivo (solo necesita el `.mat` de la
+red en la misma carpeta) y produce, también como PNG:
+
+1. **Corrida**: α, θ y voltaje, con tiempo de subida, temblor, rizo de voltaje,
+   dV/dt e inversiones por segundo.
+2. **Voltaje**: lo que ordena la red antes del filtro frente a lo que llega al
+   motor, con acercamiento a la subida y al balance.
+3. **Modelo vs Qube**: el modelo no lineal oficial con la misma red, desde el
+   mismo estado inicial, frente a lo medido.
+4. **Validación del modelo**: predicción del modelo a 0.1 s usando el voltaje
+   medido; su error dice cuánto se parece el modelo al Qube real.
 
 ### Registro de datos para calibrar el modelo
 

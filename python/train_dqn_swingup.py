@@ -1,5 +1,5 @@
 """
-Deep Q-Learning para SWING-UP + BALANCE del péndulo del Qube-Servo 3 (versión 3).
+Deep Q-Learning para SWING-UP + BALANCE del péndulo del Qube-Servo 3 (versión 4).
 
 Planta: modelo NO LINEAL OFICIAL de Quanser (qube_model_oficial.py) con el
 filtro pasa bajas de la salida dentro del lazo (rl_env_swingup.py). No se usa
@@ -16,7 +16,7 @@ Dos modos de acción:
 Uso:
     python train_dqn_swingup.py [--incremental]
 Salida:
-    ../models/dqn_swingup_v3_qube.mat   struct `red_swingup` listo para el bloque
+    ../models/dqn_swingup_v4_qube.mat   struct `red_swingup` listo para el bloque
                                         de Simulink (solo hace falta MATLAB)
 """
 
@@ -40,7 +40,7 @@ from rl_env_swingup import (A_OBS, DEG, ESPEJO, FILTRO_W, FILTRO_ZETA, N_OBS, X_
                             QubeSwingUpEnv, envolver)
 
 ROOT = Path(__file__).resolve().parent.parent
-NOMBRE = "dqn_swingup_v3_qube"
+NOMBRE = "dqn_swingup_v4_qube"
 ACCIONES_ABS = [-10.0, -6.0, -3.5, -2.0, -1.0, -0.5, -0.2, 0.0, 0.2, 0.5, 1.0, 2.0, 3.5, 6.0, 10.0]
 ACCIONES_INC = [-4.0, -1.5, -0.5, -0.15, -0.05, 0.0, 0.05, 0.15, 0.5, 1.5, 4.0]
 
